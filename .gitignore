@@ -1,5 +1,7 @@
 .vscode
 .venv
 data/
+wandb/
+datasets/
 
 __pycache__

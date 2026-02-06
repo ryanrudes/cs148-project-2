@@ -34,14 +34,14 @@ class ResidualBlock(nn.Module):
 
 
 class ResidualBlockWithDownsample(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, stride=2):
+    def __init__(self, in_channels: int, out_channels: int, kernel_size=3, stride=2):
         super().__init__()
         
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size,
                                stride=stride, padding=1, bias=False)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size,
                                stride=1, padding=1, bias=False)
-        
+
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.bn2 = nn.BatchNorm2d(out_channels)
 
@@ -64,9 +64,26 @@ class ResidualBlockWithDownsample(nn.Module):
 
         out = out + identity
         out = F.relu(out)
-        
+
         return out
 
+
+class ResNeXtBlock(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        stride: int,
+    ):
+        super().__init__()
+        
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+
+        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size=1, bias=False)
 
 class CNN(nn.Module):
     def __init__(
@@ -151,25 +168,44 @@ class ResidualCNN(CNN):
         #self.residual_block1 = ResidualBlock(32, 32)
         #self.residual_block2 = ResidualBlock(64, 64)
         
-        self.res1 = ResidualBlockWithDownsample(3, 32, stride=2)
-        self.res2 = ResidualBlockWithDownsample(32, 64, stride=2)
+        """
+        # size = 28x28
+        self.res1a = ResidualBlockWithDownsample(3, 32, stride=2)
+        self.res1b = ResidualBlockWithDownsample(32, 32, stride=1)
+        self.res1c = ResidualBlockWithDownsample(32, 64, stride=2)
         
-        self.res3 = ResidualBlock(32, 32)
+        self.res2a = ResidualBlockWithDownsample(3, 32, stride=1)
+        self.res2b = ResidualBlockWithDownsample(32, 32, stride=4)
+        self.res2c = ResidualBlockWithDownsample(32, 64, stride=1)
+        
+        self.res3 = ResidualBlock(64, 64)
+        """
+        
+        self.res1 = ResidualBlockWithDownsample(3, 32, stride=2)
 
     def forward(self, x):
         identity = x
-
-        x = self.res1(x)
-        x = self.res2(x)
-        print(x.shape)
         
-        #x = self.conv1(x)
-        #x = self.residual_block1(x)
-        #x = self.conv2(x)
-        #x = self.residual_block2(x)
-        #x = self.classifier(x)
+        y = self.res1(x)
+        print(y.shape)
 
-        return x
+        """
+        # size = 28x28
+        y1 = self.res1a(identity)
+        y1 = self.res1b(y1)
+        y1 = self.res1c(y1)
+        
+        y2 = self.res2a(identity)
+        y2 = self.res2b(y2)
+        y2 = self.res2c(y2)
+        
+        y = y1 + y2
+        y = self.res3(y)
+        """
+        
+        y = self.classifier(y)
+
+        return y
 
 class CNNWithResidualConnections(nn.Module):
     def __init__(

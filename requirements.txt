@@ -5,3 +5,5 @@ torchvision
 matplotlib
 rich
 tqdm
+torchmetrics
+wandb
