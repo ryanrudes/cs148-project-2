@@ -36,7 +36,7 @@ class ResidualBlock(nn.Module):
 class ResidualBlockWithDownsample(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size=3, stride=2):
         super().__init__()
-        
+
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size,
                                stride=stride, padding=1, bias=False)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size,
@@ -131,7 +131,8 @@ class CNN(nn.Module):
         # Classifier
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64 * 7 * 7, 128),
+            # nn.Linear(64 * 7 * 7, 128),
+            nn.Linear(4096, 128),
             nn.ReLU(inplace=True),
             conditional_layer(use_dropout, lambda: nn.Dropout(dropout)),
             nn.Linear(128, num_classes)

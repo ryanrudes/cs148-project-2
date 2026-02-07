@@ -22,6 +22,7 @@ from augmentations import get_yolo_augmentor
 from preprocess_data import compute_mean_std
 from dataset import DummyMNIST
 from resnext import ResNeXt
+from net import CNN
 
 
 DATASET_NAME = "mnist_rgb_224"
@@ -36,9 +37,11 @@ EXTERNAL_DATASET = "SVHN"  # Currently supported: "SVHN"
 # The fractions in this dictionary are relative to the size of the original training set
 # So we would add in fraction * len(original_training_set) examples from each external dataset
 EXTERNAL_DATA_FRACTIONS = {
-    ExternalDataset.SVHN_TRAIN: 0.2,
-    ExternalDataset.SVHN_TEST: 0.2,
-    ExternalDataset.SVHN_EXTRA: 0.2,
+    ExternalDataset.SVHN_TRAIN: 0.025,
+    ExternalDataset.SVHN_TEST: 0.025,
+    ExternalDataset.SVHN_EXTRA: 0.025,
+    ExternalDataset.MNIST_TRAIN: 0.025,
+    ExternalDataset.MNIST_TEST: 0.025,
 }
 
 
@@ -47,6 +50,16 @@ mps_available = torch.backends.mps.is_available()
 device_name = "cuda" if cuda_available else ("mps" if mps_available else "cpu")
 DEVICE = torch.device(device_name)
 print("Using device:", DEVICE)
+
+
+class ApplyTransform:
+    """Picklable callable wrapper around a torchvision transform that accepts (img, label)."""
+
+    def __init__(self, transform):
+        self.transform = transform
+
+    def __call__(self, img, label):
+        return self.transform(img)
 
 
 def load_data():
@@ -83,19 +96,22 @@ def split_dataset(images, labels, mean=None, std=None, train_fraction: float = 0
         for ext_dataset, ext_fraction in EXTERNAL_DATA_FRACTIONS.items():
             print("Loading external dataset:", ext_dataset.value)
 
-            num_to_add = int(ext_fraction * num_original_train)
+            if ext_fraction == -1:
+                max_samples = None
+            else:
+                max_samples = int(ext_fraction * num_original_train)
 
-            ext_images, ext_labels = load_external_dataset(ext_dataset, COLOR, SIZE, max_samples=num_to_add, rnd=generator)
-            if num_to_add > 0:
-                sample_idxs = torch.randperm(len(ext_images), generator=generator)[:num_to_add]
-            chosen_images = ext_images[sample_idxs]
-            chosen_labels = ext_labels[sample_idxs]
+            ext_images, ext_labels = load_external_dataset(ext_dataset, COLOR, SIZE, max_samples=max_samples, rnd=generator)
+            if max_samples is not None and max_samples > 0:
+                sample_idxs = torch.randperm(len(ext_images), generator=generator)[:max_samples]
+                ext_images = ext_images[sample_idxs]
+                ext_labels = ext_labels[sample_idxs]
 
             # Concatenate into training set (augmentor will normalize per-sample during __getitem__)
-            train_images = torch.cat([train_images, chosen_images], dim=0)
-            train_labels = torch.cat([train_labels, chosen_labels], dim=0)
+            train_images = torch.cat([train_images, ext_images], dim=0)
+            train_labels = torch.cat([train_labels, ext_labels], dim=0)
 
-            print(f"Mixed in {num_to_add} samples from {ext_dataset.value} into training set (new train size {len(train_images)})")
+            print(f"Mixed in {len(ext_images)} samples from {ext_dataset.value} into training set (new train size {len(train_images)})")
 
     # Recompute mean and std after mixing in external datasets
     mean, std = compute_mean_std(train_images, color=COLOR)
@@ -121,10 +137,10 @@ def split_dataset(images, labels, mean=None, std=None, train_fraction: float = 0
     val_dataset = DummyMNIST(
         images=val_images,
         labels=val_labels,
-        transform=lambda img, label: val_norm(img),
+        transform=ApplyTransform(val_norm),
     )
 
-    return train_dataset, val_dataset
+    return train_dataset, val_dataset, mean, std
 
 
 def create_dataloaders(
@@ -133,7 +149,8 @@ def create_dataloaders(
     batch_size: int = 128,
 ) -> tuple[DataLoader, DataLoader]:
     # Apparently on MPS there's usually little benefit from multi-worker loading
-    num_workers = cpu_count() if DEVICE.type == "cuda" else 0
+    # num_workers = cpu_count() if DEVICE.type == "cuda" else 0
+    num_workers = min(8, max(1, cpu_count() - 1))
 
     # This gives you faster CPU to GPU transfer, but it only helps on CUDA
     # not on MPS
@@ -154,7 +171,9 @@ def create_dataloaders(
         "prefetch_factor": prefetch_factor,
     }
 
-    train_loader = DataLoader(train_dataset, shuffle=True, **kwargs)
+    # Drop last is necessary because the batch size must be even when using Mixup/CutMix
+    # because it internally splits the batch in half to mix samples together.
+    train_loader = DataLoader(train_dataset, shuffle=True, drop_last=True, **kwargs)
     val_loader = DataLoader(val_dataset, shuffle=False, **kwargs)
 
     return train_loader, val_loader
@@ -180,14 +199,18 @@ def compute_metrics(metrics: dict[str, Metric]) -> dict[str, float]:
     return {name: metric.compute().item() for name, metric in metrics.items()}
 
 
-def train_epoch(model, train_loader, criterion, optimizer, metrics, scaler, mixup_fn=None):
+def train_epoch(model, train_loader, criterion, optimizer, metrics, scaler, mixup_fn=None, ema=None):
     model.train()
     mean_loss = 0
     num_batches = 0
 
+    pin_memory = DEVICE.type == "cuda"
+
     for images, labels in train_loader:
-        images = images.to(DEVICE).float()
-        labels = labels.to(DEVICE).long()
+        if images.dtype != torch.float32:
+            images = images.float()
+        images = images.to(DEVICE, non_blocking=pin_memory)
+        labels = labels.long().to(DEVICE, non_blocking=pin_memory)
 
         if mixup_fn is not None:
             images, labels = mixup_fn(images, labels)
@@ -195,7 +218,7 @@ def train_epoch(model, train_loader, criterion, optimizer, metrics, scaler, mixu
         optimizer.zero_grad()
 
         with autocast(device_type=DEVICE.type):
-            logits = model(images)  # [B, num_classes]
+            logits = model(images)
             # IMPORTANT: do NOT squeeze logits; it breaks when batch_size==1
             loss = criterion(logits, labels)
 
@@ -216,6 +239,9 @@ def train_epoch(model, train_loader, criterion, optimizer, metrics, scaler, mixu
         scaler.step(optimizer)
         scaler.update()
 
+        if ema is not None:
+            ema.update_parameters(model)
+
     metric_values = compute_metrics(metrics)
     metric_values["cross_entropy"] = mean_loss
     reset_metrics(metrics)
@@ -227,10 +253,14 @@ def validate(model, val_loader, criterion, metrics):
     mean_loss = 0
     num_batches = 0
 
+    pin_memory = DEVICE.type == "cuda"
+
     with torch.no_grad():
         for images, labels in val_loader:
-            images = images.to(DEVICE).float()
-            labels = labels.to(DEVICE).long()
+            if images.dtype != torch.float32:
+                images = images.float()
+            images = images.to(DEVICE, non_blocking=pin_memory)
+            labels = labels.long().to(DEVICE, non_blocking=pin_memory)
 
             with autocast(device_type=DEVICE.type):
                 logits = model(images)
@@ -253,14 +283,15 @@ def train():
     print("Loaded data from cache:", images.shape, labels.shape,
           "mean:", mean, "std:", std)
 
-    train_dataset, val_dataset = split_dataset(images, labels, mean, std)
+    train_dataset, val_dataset, mean, std = split_dataset(images, labels, mean, std)
     train_loader, val_loader = create_dataloaders(train_dataset, val_dataset)
 
     mixup = MixupCutmixApply(create_mixup_cutmix(num_classes=10, mixup_alpha=0.2, cutmix_alpha=1.0))
+    #mixup = None
 
-    """
+    #"""
     import cv2
-    
+
     for images, labels in train_loader:
         images = images.to(DEVICE).float()
         labels = labels.to(DEVICE).long()
@@ -269,31 +300,47 @@ def train():
 
         for i in range(images.shape[0]):
             print(images[i].min(), images[i].max(), labels[i])
-            cv2.imshow("Sample Image", images[i].permute(1, 2, 0).cpu().numpy())
+            image = images[i].permute(1, 2, 0).cpu().numpy()
+            image = (image * std + mean).clip(0, 1)
+            image = (image * 255).astype(np.uint8)
+            cv2.imshow("Sample Image", image)
             cv2.waitKey(0)
 
     exit()
-    """
+    #"""
 
+    #"""
     model = ResNeXt(
         # layers=[3, 4, 6, 3],
         # layers=[2, 3, 4, 2],
-        layers=[1, 2, 3, 1],
-        # layers=[3, 4, 23, 3],
+        # layers=[1, 2, 3, 1],
+        layers=[3, 4, 23, 3],
         num_classes=10,
-        groups=32,
+        groups=64,
+        #groups=8,
         width_per_group=4,
+        #width_per_group=2,
         drop_path_rate=0.1,
     )
-    model = model.to(DEVICE)
+    #"""
 
-    ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.99), use_buffers=True)
+    #model = CNN(
+    #    num_classes=10,
+    #    input_height=SIZE,
+    #    input_width=SIZE,
+    #    input_channels=3 if COLOR else 1,
+    #)
+    model = model.to(DEVICE)
+    model = torch.compile(model)
+
+    ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.995), use_buffers=True)
 
     num_epochs = 300
 
     # For training, Mixup/CutMix augmentations make the targets soft one-hot mixtures, so
     # there is a special loss for that
     train_criterion = SoftTargetCrossEntropy()
+    #train_criterion = nn.CrossEntropyLoss()
     # For validation, the labels are still hard integers, so regular cross-entropy is fine
     val_criterion = nn.CrossEntropyLoss()
 
@@ -303,14 +350,14 @@ def train():
     # Define the evaluation metrics
     metrics = {
         "accuracy": Accuracy(task="multiclass", num_classes=10),
-        "top_2_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=2),
+        #"top_2_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=2),
         "top_3_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=3),
-        "top_4_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=4),
-        "top_5_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=5),
-        "top_6_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=6),
-        "top_7_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=7),
-        "top_8_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=8),
-        "top_9_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=9),
+        #"top_4_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=4),
+        #"top_5_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=5),
+        #"top_6_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=6),
+        #"top_7_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=7),
+        #"top_8_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=8),
+        #"top_9_accuracy": Accuracy(task="multiclass", num_classes=10, top_k=9),
         "f1_score": F1Score(task="multiclass", num_classes=10),
     }
 
@@ -337,6 +384,9 @@ def train():
         checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
         os.makedirs(checkpoint_dir, exist_ok=True)
 
+        # Add mean and std to wandb config for reference
+        wandb.config.update({"mean": mean, "std": std})
+
     # GradScaler is CUDA-only; disable it automatically on MPS/CPU.
     scaler = GradScaler(enabled=(DEVICE.type == "cuda"))
     best_val_accuracy = 0.0
@@ -350,12 +400,16 @@ def train():
             metrics,
             scaler,
             mixup_fn=mixup,
+            ema=ema,
         )
-        ema.update_parameters(model)
 
         # Validate with both raw and EMA model
         val_metrics_raw = validate(model, val_loader, val_criterion, metrics)
+
+        #should_validate_ema = (epoch % 5 == 0) or (epoch == num_epochs - 1)
+        #if should_validate_ema:
         val_metrics_ema = validate(ema, val_loader, val_criterion, metrics)
+
         scheduler.step()
 
         if WANDB:
@@ -411,5 +465,8 @@ def train():
 
 
 if __name__ == "__main__":
+    if DEVICE.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+
     freeze_support()
     train()
