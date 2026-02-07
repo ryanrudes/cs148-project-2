@@ -289,7 +289,10 @@ def train():
     mixup = MixupCutmixApply(create_mixup_cutmix(num_classes=10, mixup_alpha=0.2, cutmix_alpha=1.0))
     #mixup = None
 
-    #"""
+    # Disable mixup for the final N epochs to let the model fine-tune on real labels
+    MIXUP_DISABLE_FINAL_EPOCHS = 10
+
+    """
     import cv2
 
     for images, labels in train_loader:
@@ -307,7 +310,7 @@ def train():
             cv2.waitKey(0)
 
     exit()
-    #"""
+    """
 
     #"""
     model = ResNeXt(
@@ -392,6 +395,11 @@ def train():
     best_val_accuracy = 0.0
 
     for epoch in range(num_epochs):
+        # Disable mixup for the final N epochs so the model can fine-tune on real labels
+        active_mixup = mixup if epoch < num_epochs - MIXUP_DISABLE_FINAL_EPOCHS else None
+        if epoch == num_epochs - MIXUP_DISABLE_FINAL_EPOCHS:
+            print(f"Disabling mixup for final {MIXUP_DISABLE_FINAL_EPOCHS} epochs")
+
         train_metrics = train_epoch(
             model,
             train_loader,
@@ -399,7 +407,7 @@ def train():
             optimizer,
             metrics,
             scaler,
-            mixup_fn=mixup,
+            mixup_fn=active_mixup,
             ema=ema,
         )
 
