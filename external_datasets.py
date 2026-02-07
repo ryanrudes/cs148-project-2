@@ -15,6 +15,8 @@ class ExternalDataset(Enum):
     SVHN_TRAIN = "SVHN Train"
     SVHN_TEST = "SVHN Test"
     SVHN_EXTRA = "SVHN Extra"
+    MNIST_TRAIN = "MNIST Train"
+    MNIST_TEST = "MNIST Test"
 
 
 def dataset_factory(dataset: ExternalDataset) -> datasets.VisionDataset:
@@ -25,6 +27,10 @@ def dataset_factory(dataset: ExternalDataset) -> datasets.VisionDataset:
             return datasets.SVHN(root=DOWNLOAD_ROOT, split="test", download=True)
         case ExternalDataset.SVHN_EXTRA:
             return datasets.SVHN(root=DOWNLOAD_ROOT, split="extra", download=True)
+        case ExternalDataset.MNIST_TRAIN:
+            return datasets.MNIST(root=DOWNLOAD_ROOT, train=True, download=True)
+        case ExternalDataset.MNIST_TEST:
+            return datasets.MNIST(root=DOWNLOAD_ROOT, train=False, download=True)
         case _:
             raise ValueError(f"Unsupported dataset: {dataset}")
 

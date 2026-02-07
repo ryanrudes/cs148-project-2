@@ -8,3 +8,4 @@
 - EMA
 - Random drop path
 - Gradient norm clipping
+- External datasets like SVHN and MNIST
