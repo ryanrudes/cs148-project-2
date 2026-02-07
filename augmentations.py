@@ -1,94 +1,145 @@
-from torchvision import transforms as T
+"""
+This is an implementation of the YOLO26 image augmentation pipeline.
+Details are here:
+https://docs.ultralytics.com/guides/yolo-data-augmentation/#using-a-configuration-file
+Images entering this pipeline are already tensors of shape (C, H, W) in [0, 1]
+(from ToTensor), resized/grayscaled as needed, and cached for quick loading.
+
+The deterministic preprocessing operations like resize, grayscale, and normalization are not
+included here, since they are applied before the random augmentations for efficiency and
+cached locally for quick loading. This module implements both the random and
+deterministic augmentations, but the preprocessed data is prepared and cached in
+preprocess_data.py.
+"""
+
+from ultralytics.data.augment import classify_augmentations
+
+from torchvision import transforms as TV1
+from torchvision.transforms import v2 as T
 from torchvision.transforms import functional as F
+
+from torch import Tensor
+from PIL import Image
 
 import torch
 import random
-import math
-
-COLOR = False
-SIZE = 64
-
-if COLOR:
-    preprocess = T.Compose([
-        T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
-        T.Resize((SIZE, SIZE)),
-        T.ToTensor(),
-        T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-    ])
-else:
-    preprocess = T.Compose([
-        T.Grayscale(),
-        T.Resize((SIZE, SIZE)),
-        T.ToTensor(),
-        T.Normalize((0.5,), (0.5,)),
-    ])
 
 
-# ---------------------------------------------------------------------------
-# YOLO-style data augmentation pipeline (adapted for classification tensors)
-# ---------------------------------------------------------------------------
-# Default values taken from Ultralytics YOLO26 / YOLOv8 configuration.
-# The images entering this pipeline are already tensors (C, H, W) normalised
-# to [-1, 1] via Normalize((0.5,…), (0.5,…)).
-# ---------------------------------------------------------------------------
+# Digits that are always symmetric under horizontal flip
+SYMMETRIC_DIGITS = {0, 8}
 
 
-class Unnormalize:
-    """Undo Normalize((0.5,…), (0.5,…)) → map [-1, 1] back to [0, 1]."""
+class ApplyUltralyticsColorErasing:
+    """Apply cached Ultralytics color+erasing pipeline only for 3-channel tensors."""
 
-    def __call__(self, img: torch.Tensor) -> torch.Tensor:
-        return img * 0.5 + 0.5
+    def __init__(self, ultra_color_erasing):
+        self.ultra_color_erasing = ultra_color_erasing
 
-
-class Renormalize:
-    """Re-apply Normalize((0.5,…), (0.5,…)) → map [0, 1] back to [-1, 1]."""
-
-    def __call__(self, img: torch.Tensor) -> torch.Tensor:
-        return (img.clamp(0, 1) - 0.5) / 0.5
+    def __call__(self, x: Tensor) -> Tensor:
+        return self.ultra_color_erasing(x) if x.shape[0] == 3 else x
 
 
-class HSVAugmentation:
-    """YOLO-style random HSV jitter.
-
-    Adjusts hue, saturation, and brightness (value) independently.
-
-    Args:
-        h_gain: maximum hue shift as a fraction of 0.5 (default 0.015).
-        s_gain: maximum saturation scale factor (default 0.7).
-        v_gain: maximum brightness scale factor (default 0.4).
-    """
-
-    def __init__(self, h_gain: float = 0.015, s_gain: float = 0.7, v_gain: float = 0.4):
-        self.h_gain = h_gain
-        self.s_gain = s_gain
-        self.v_gain = v_gain
-
-    def __call__(self, img: torch.Tensor) -> torch.Tensor:
-        # Random factors in [-gain, +gain]
-        h_delta = random.uniform(-self.h_gain, self.h_gain)  # hue shift (passed to adjust_hue)
-        s_factor = 1.0 + random.uniform(-self.s_gain, self.s_gain)  # saturation multiplier
-        v_factor = 1.0 + random.uniform(-self.v_gain, self.v_gain)  # brightness multiplier
-
-        img = F.adjust_hue(img, h_delta)
-        img = F.adjust_saturation(img, s_factor)
-        img = F.adjust_brightness(img, v_factor)
-        return img.clamp(0, 1)
-
-
-class RandomBGRFlip:
-    """Randomly swap RGB channels to BGR with a given probability.
-
-    Args:
-        p: probability of applying the channel swap (default 0.0, matching YOLO).
-    """
+class RandomBGRSwap:
+    """Optionally swap RGB<->BGR with probability p (expects CHW tensor)."""
 
     def __init__(self, p: float = 0.0):
-        self.p = p
+        self.p = float(p)
 
-    def __call__(self, img: torch.Tensor) -> torch.Tensor:
-        if random.random() < self.p:
-            return img.flip(0)  # reverse channel dim
+    def __call__(self, x: Tensor) -> Tensor:
+        if self.p > 0 and random.random() < self.p:
+            return x.flip(0)
+        return x
+
+
+class FinalNormalize:
+    """Normalize once at the end, supporting RGB or grayscale."""
+
+    def __init__(self, norm_rgb, norm_gray):
+        self.norm_rgb = norm_rgb
+        self.norm_gray = norm_gray
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return self.norm_rgb(x) if x.shape[0] == 3 else self.norm_gray(x)
+
+
+def convert_to_rgb_if_needed(img: Image) -> Image:
+    if img.mode != "RGB":
+        return img.convert("RGB")
+    return img
+
+
+def get_preprocessor(
+    color: bool,
+    size: int,
+) -> T.Compose:
+    if color:
+        transforms = [T.RGB()]
+    else:
+        transforms = [T.Grayscale()]
+
+    transforms.extend([
+        T.Resize((size, size)),
+        T.ToImage(),
+        T.ToDtype(torch.float32, scale=True),
+    ])
+
+    return T.Compose(transforms)
+
+
+class LabelConditionalHFlip:
+    """Random does a horizontal flip only when the label is a symmetric digit."""
+    def __init__(self, p: float = 0.5, symmetric_labels: set[int] = SYMMETRIC_DIGITS):
+        self.p = p
+        self.symmetric_labels = symmetric_labels
+
+    def __call__(self, img: Tensor, label: int) -> Tensor:
+        if label in self.symmetric_labels and random.random() < self.p:
+            return F.hflip(img)
         return img
+
+
+def build_ultralytics_color_erasing(
+    *,
+    hsv_h: float,
+    hsv_s: float,
+    hsv_v: float,
+    erasing: float,
+    auto_augment: str | None = None,
+    force_color_jitter: bool = False,
+    interpolation: str = "BILINEAR",
+) -> TV1.Compose:
+    """Reuse Ultralytics classify_augmentations(), but drop its preprocessing steps.
+
+    Ultralytics' classify_augmentations() returns:
+      RandomResizedCrop -> (optional flips) -> (optional AA) -> ColorJitter -> ToTensor -> Normalize -> RandomErasing
+
+    Our pipeline already does deterministic preprocessing elsewhere and caches it.
+    So here we keep only the *color* and *random erasing* pieces.
+    """
+    t = classify_augmentations(
+        size=1,  # required int by Ultralytics; we strip the crop anyway
+        mean=(0.0, 0.0, 0.0),
+        std=(1.0, 1.0, 1.0),
+        hflip=0.0,
+        vflip=0.0,
+        auto_augment=auto_augment,
+        hsv_h=hsv_h,
+        hsv_s=hsv_s,
+        hsv_v=hsv_v,
+        force_color_jitter=force_color_jitter,
+        erasing=erasing,
+        interpolation=interpolation,
+    )
+
+    drop = {
+        "RandomResizedCrop",
+        "RandomHorizontalFlip",
+        "RandomVerticalFlip",
+        "ToTensor",
+        "Normalize",
+    }
+    kept = [tr for tr in getattr(t, "transforms", []) if tr.__class__.__name__ not in drop]
+    return TV1.Compose(kept)
 
 
 class YOLOAugment:
@@ -108,7 +159,9 @@ class YOLOAugment:
         fliplr:      horiz-flip probability (default 0.5)
         flipud:      vert-flip probability  (default 0.0)
         bgr:         channel-swap prob      (default 0.0)
-        erasing:     random-erase prob      (default 0.4)
+        erasing:     random-erase prob      (default 0.4; your preset overrides it)
+        mean:       normalization mean(s) applied at the end (default 0.5 per channel)
+        std:        normalization std(s) applied at the end  (default 0.5 per channel)
     """
 
     def __init__(
@@ -125,14 +178,35 @@ class YOLOAugment:
         flipud: float = 0.0,
         bgr: float = 0.0,
         erasing: float = 0.4,
+        mean: tuple[float, ...] | None = None,
+        std: tuple[float, ...] | None = None,
     ):
-        self.transform = T.Compose([
-            # Unnormalise so colour operations work on [0, 1]
-            Unnormalize(),
+        self.conditional_hflip = LabelConditionalHFlip(p=fliplr)
 
-            # Color augmentations
-            HSVAugmentation(h_gain=hsv_h, s_gain=hsv_s, v_gain=hsv_v),
-            RandomBGRFlip(p=bgr),
+        # Build once (not per-sample) to avoid overhead.
+        # Only valid for 3-channel inputs; for 1-channel we skip this and rely on other augs.
+        self.ultra_color_erasing = build_ultralytics_color_erasing(
+            hsv_h=hsv_h,
+            hsv_s=hsv_s,
+            hsv_v=hsv_v,
+            erasing=erasing,
+        )
+
+        # Final normalization (applied once at the end). Defaults to mapping [0,1] -> [-1,1].
+        if mean is None or std is None:
+            mean = (0.5, 0.5, 0.5)
+            std = (0.5, 0.5, 0.5)
+        self._norm_rgb = T.Normalize(mean=tuple(mean), std=tuple(std))
+        # Grayscale fallback uses the first channel's stats.
+        self._norm_gray = T.Normalize(mean=(float(mean[0]),), std=(float(std[0]),))
+
+        self.transform = T.Compose([
+            # Color + erasing augmentations (Ultralytics classify_augmentations subset)
+            # Apply only when the tensor has 3 channels.
+            ApplyUltralyticsColorErasing(self.ultra_color_erasing),
+
+            # Optional RGB<->BGR channel swap (kept for parity with YOLO hyp, default off)
+            RandomBGRSwap(p=bgr),
 
             # Geometric augmentations
             T.RandomAffine(
@@ -142,26 +216,31 @@ class YOLOAugment:
                 shear=(-shear, shear, -shear, shear) if shear > 0 else None,
             ),
             T.RandomPerspective(distortion_scale=perspective, p=0.5 if perspective > 0 else 0.0),
-            T.RandomHorizontalFlip(p=fliplr),
+            # NOTE: hflip is handled by LabelConditionalHFlip, not here
             T.RandomVerticalFlip(p=flipud),
 
-            # Random erasure operates on tensors
-            T.RandomErasing(p=erasing, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0),
-
-            # Renormalise back to [-1, 1]
-            Renormalize(),
+            # Normalize once at the end (supports RGB or grayscale)
+            FinalNormalize(self._norm_rgb, self._norm_gray),
         ])
 
-    def __call__(self, img: torch.Tensor) -> torch.Tensor:
-        return self.transform(img)
+    def __call__(self, img: Tensor, label: int | None = None) -> Tensor:
+        img = self.transform(img)
+        if label is not None:
+            img = self.conditional_hflip(img, label)
+        return img
 
 
-# YOLO26-style augmentation pipeline with digit-safe hyperparameters
-augment = YOLOAugment(
-    fliplr=0.0,       # no horizontal flip
-    erasing=0.1,      # mild erasing
-    scale=0.2,        # gentler zoom range (0.8x–1.2x)
-    degrees=15,       # small rotation is fine, just not large (maybe go back to 5?)
-    shear=4.0,        # small shear is fine, just not large
-    translate=0.15,
-)
+def get_yolo_augmentor(mean: tuple[float, ...] | None = None, std: tuple[float, ...] | None = None) -> YOLOAugment:
+    # YOLO26-style augmentation pipeline with digit-safe hyperparameters
+    augment = YOLOAugment(
+        fliplr=0.5,       # horizontal flip (only applied to symmetric digits: 0, 8)
+        erasing=0.1,      # mild erasing (maybe go back to 0.1)
+        scale=0.2,        # gentler zoom range (0.8x–1.2x)
+        degrees=15,       # small rotation is fine, just not large
+        shear=4.0,        # small shear is fine, just not large
+        translate=0.15,
+        mean=mean,
+        std=std,
+    )
+
+    return augment

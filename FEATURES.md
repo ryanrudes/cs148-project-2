@@ -1,0 +1,10 @@
+- ResNeXt
+- YOLO26-style augmentation pipeline with digit-safe hyperparameters
+- Random horizontal flipping for always-symmetric digits (0 and 8)
+- Mixup/CutMix with soft 
+- AdamW optimizer with weight decay
+- Cosine annealing learning rate scheduler
+- Tracking Accuracy, F1 Score, top-k accuracy, and gradients
+- EMA
+- Random drop path
+- Gradient norm clipping

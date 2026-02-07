@@ -5,6 +5,28 @@ import torch.nn as nn
 import torch
 
 
+class DropPath(nn.Module):
+    """Stochastic Depth (drop entire residual branch with probability p).
+
+    During training, each sample in the batch independently has its residual
+    branch dropped (replaced with identity) with probability `drop_prob`.
+    At test time, outputs are returned unchanged.
+    """
+
+    def __init__(self, drop_prob: float = 0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: Tensor) -> Tensor:
+        if not self.training or self.drop_prob == 0.0:
+            return x
+        keep_prob = 1 - self.drop_prob
+        # shape (B, 1, 1, 1) so each sample is independently dropped
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        mask = torch.rand(shape, device=x.device, dtype=x.dtype) < keep_prob
+        return x * mask / keep_prob
+
+
 def conv3x3(
     in_features: int,
     out_features: int,
@@ -58,6 +80,7 @@ class ResNeXtBlock(nn.Module):
         base_width: int = 64,
         dilation: int = 1,
         norm_layer: Callable[..., nn.Module] = nn.BatchNorm2d,
+        drop_path: float = 0.0,
     ):
         super().__init__()
 
@@ -72,6 +95,7 @@ class ResNeXtBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x: Tensor) -> Tensor:
         identity = x
@@ -90,6 +114,7 @@ class ResNeXtBlock(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(x)
 
+        z = self.drop_path(z)
         z += identity
         z = self.relu(z)
 
@@ -104,6 +129,7 @@ class ResNeXt(nn.Module):
         zero_init_residual: bool = False,
         groups: int = 1,
         width_per_group: int = 64,
+        drop_path_rate: float = 0.0,
         replace_stride_with_dilation: list[bool] | None = None,
         norm_layer: Callable[..., nn.Module] = nn.BatchNorm2d,
     ):
@@ -127,6 +153,12 @@ class ResNeXt(nn.Module):
 
         self.groups = groups
         self.base_width = width_per_group
+
+        # Compute linearly increasing drop path rates for each block
+        total_blocks = sum(layers)
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, total_blocks)]
+        self._block_idx = 0  # counter used by _make_layer
+        self._dpr = dpr
 
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = norm_layer(self.inplanes)
@@ -185,8 +217,10 @@ class ResNeXt(nn.Module):
                 self.base_width,
                 previous_dilation,
                 norm_layer,
+                drop_path=self._dpr[self._block_idx],
             )
         )
+        self._block_idx += 1
 
         self.inplanes = planes * ResNeXtBlock.expansion
 
@@ -199,8 +233,10 @@ class ResNeXt(nn.Module):
                     base_width=self.base_width,
                     dilation=self.dilation,
                     norm_layer=norm_layer,
+                    drop_path=self._dpr[self._block_idx],
                 )
             )
+            self._block_idx += 1
 
         return nn.Sequential(*layers)
 

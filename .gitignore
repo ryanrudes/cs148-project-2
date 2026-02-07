@@ -3,5 +3,10 @@
 data/
 wandb/
 datasets/
+ckpt/
+trash/
+checkpoints/
+
+.DS_Store
 
 __pycache__

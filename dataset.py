@@ -31,6 +31,6 @@ class DummyMNIST(Dataset):
         label = self.labels[idx]
 
         if self.transform is not None:
-            image = self.transform(image)
+            image = self.transform(image, label)
 
         return image, label
