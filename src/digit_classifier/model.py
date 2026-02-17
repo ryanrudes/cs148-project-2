@@ -1,27 +1,37 @@
+"""ResNeXt model with stochastic depth (drop-path).
+
+This is the only model architecture used by the training pipeline.  It is a
+faithful port of the original ``resnext.py`` with no behavioural changes.
+"""
+
+from __future__ import annotations
+
 from typing import Callable
+
+import torch
+import torch.nn as nn
 from torch import Tensor
 
-import torch.nn as nn
-import torch
 
+# ---------------------------------------------------------------------------
+# Building blocks
+# ---------------------------------------------------------------------------
 
 class DropPath(nn.Module):
-    """Stochastic Depth (drop entire residual branch with probability p).
+    """Stochastic Depth — drop an entire residual branch with probability *p*.
 
-    During training, each sample in the batch independently has its residual
-    branch dropped (replaced with identity) with probability `drop_prob`.
-    At test time, outputs are returned unchanged.
+    During training each sample in the batch is independently dropped (replaced
+    with identity).  At test time outputs are returned unchanged.
     """
 
-    def __init__(self, drop_prob: float = 0.0):
+    def __init__(self, drop_prob: float = 0.0) -> None:
         super().__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x: Tensor) -> Tensor:
         if not self.training or self.drop_prob == 0.0:
             return x
-        keep_prob = 1 - self.drop_prob
-        # shape (B, 1, 1, 1) so each sample is independently dropped
+        keep_prob = 1.0 - self.drop_prob
         shape = (x.shape[0],) + (1,) * (x.ndim - 1)
         mask = torch.rand(shape, device=x.device, dtype=x.dtype) < keep_prob
         return x * mask / keep_prob
@@ -34,7 +44,7 @@ def conv3x3(
     groups: int = 1,
     dilation: int = 1,
 ) -> nn.Conv2d:
-    """3x3 convolution with padding"""
+    """3×3 convolution with padding."""
     return nn.Conv2d(
         in_features,
         out_features,
@@ -52,7 +62,7 @@ def conv1x1(
     out_features: int,
     stride: int = 1,
 ) -> nn.Conv2d:
-    """1x1 convolution"""
+    """1×1 convolution."""
     return nn.Conv2d(
         in_features,
         out_features,
@@ -62,12 +72,17 @@ def conv1x1(
     )
 
 
+# ---------------------------------------------------------------------------
+# Bottleneck block
+# ---------------------------------------------------------------------------
+
 class ResNeXtBlock(nn.Module):
+    """Bottleneck block with grouped convolution and optional drop-path.
+
+    The stride-2 down-sampling is placed at the 3×3 convolution (conv2),
+    not at the first 1×1 convolution.
     """
-    This ResNeXt block puts the non-1 stride for downsampling at the
-    2nd convolution (the 3x3 convolution), instead of the first 1x1
-    convolution.
-    """
+
     expansion: int = 4
 
     def __init__(
@@ -81,7 +96,7 @@ class ResNeXtBlock(nn.Module):
         dilation: int = 1,
         norm_layer: Callable[..., nn.Module] = nn.BatchNorm2d,
         drop_path: float = 0.0,
-    ):
+    ) -> None:
         super().__init__()
 
         width = int(out_features * (base_width / 64)) * groups
@@ -100,31 +115,28 @@ class ResNeXtBlock(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         identity = x
 
-        z = self.conv1(x)
-        z = self.bn1(z)
-        z = self.relu(z)
-
-        z = self.conv2(z)
-        z = self.bn2(z)
-        z = self.relu(z)
-
-        z = self.conv3(z)
-        z = self.bn3(z)
+        z = self.relu(self.bn1(self.conv1(x)))
+        z = self.relu(self.bn2(self.conv2(z)))
+        z = self.bn3(self.conv3(z))
 
         if self.downsample is not None:
             identity = self.downsample(x)
 
         z = self.drop_path(z)
         z += identity
-        z = self.relu(z)
+        return self.relu(z)
 
-        return z
 
+# ---------------------------------------------------------------------------
+# Full network
+# ---------------------------------------------------------------------------
 
 class ResNeXt(nn.Module):
+    """ResNeXt with linearly increasing stochastic depth."""
+
     def __init__(
         self,
-        layers: list[int],
+        layers: list[int] | tuple[int, ...],
         num_classes: int = 10,
         zero_init_residual: bool = False,
         groups: int = 1,
@@ -132,45 +144,44 @@ class ResNeXt(nn.Module):
         drop_path_rate: float = 0.0,
         replace_stride_with_dilation: list[bool] | None = None,
         norm_layer: Callable[..., nn.Module] = nn.BatchNorm2d,
-    ):
+    ) -> None:
         super().__init__()
 
         self._norm_layer = norm_layer
-
         self.inplanes = 64
         self.dilation = 1
 
         if replace_stride_with_dilation is None:
-            # each element in the tuple indicates if we should replace
-            # the 2x2 stride with a dilated convolution instead
             replace_stride_with_dilation = [False, False, False]
-
         if len(replace_stride_with_dilation) != 3:
             raise ValueError(
                 "replace_stride_with_dilation should be None "
-                f"or a 3-element tuple, got {replace_stride_with_dilation}"
+                f"or a 3-element list, got {replace_stride_with_dilation}"
             )
 
         self.groups = groups
         self.base_width = width_per_group
 
-        # Compute linearly increasing drop path rates for each block
+        # Linearly increasing drop-path rates per block
         total_blocks = sum(layers)
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, total_blocks)]
-        self._block_idx = 0  # counter used by _make_layer
+        self._block_idx = 0
         self._dpr = dpr
 
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
         self.layer1 = self._make_layer(64, layers[0])
         self.layer2 = self._make_layer(128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
+
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * ResNeXtBlock.expansion, num_classes)
 
+        # Kaiming init
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
@@ -178,12 +189,12 @@ class ResNeXt(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-        # Zero-initialize the last BN in each residual branch,
-        # so that the residual branch starts with zeros, and each residual block behaves like an identity.
-        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
         if zero_init_residual:
             for m in self.modules():
-                nn.init.constant_(m.bn3.weight, 0)  # type: ignore[arg-type]
+                if isinstance(m, ResNeXtBlock):
+                    nn.init.constant_(m.bn3.weight, 0)
+
+    # ------------------------------------------------------------------
 
     def _make_layer(
         self,
@@ -206,53 +217,38 @@ class ResNeXt(nn.Module):
                 norm_layer(planes * ResNeXtBlock.expansion),
             )
 
-        layers = []
-        layers.append(
+        layer_blocks: list[nn.Module] = []
+        layer_blocks.append(
             ResNeXtBlock(
-                self.inplanes,
-                planes,
-                stride,
-                downsample,
-                self.groups,
-                self.base_width,
-                previous_dilation,
-                norm_layer,
-                drop_path=self._dpr[self._block_idx],
+                self.inplanes, planes, stride, downsample,
+                self.groups, self.base_width, previous_dilation,
+                norm_layer, drop_path=self._dpr[self._block_idx],
             )
         )
         self._block_idx += 1
-
         self.inplanes = planes * ResNeXtBlock.expansion
 
         for _ in range(1, blocks):
-            layers.append(
+            layer_blocks.append(
                 ResNeXtBlock(
-                    self.inplanes,
-                    planes,
-                    groups=self.groups,
-                    base_width=self.base_width,
-                    dilation=self.dilation,
-                    norm_layer=norm_layer,
+                    self.inplanes, planes,
+                    groups=self.groups, base_width=self.base_width,
+                    dilation=self.dilation, norm_layer=norm_layer,
                     drop_path=self._dpr[self._block_idx],
                 )
             )
             self._block_idx += 1
 
-        return nn.Sequential(*layers)
+        return nn.Sequential(*layer_blocks)
+
+    # ------------------------------------------------------------------
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
+        x = self.maxpool(self.relu(self.bn1(self.conv1(x))))
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        x = self.fc(x)
-
-        return x
+        return self.fc(x)

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "digit-classifier"
+version = "1.0.0"
+description = "Digit classification training pipeline using ResNeXt with YOLO-style augmentation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "torchmetrics>=1.0",
+    "timm>=0.9",
+    "numpy>=1.24",
+    "rich>=13.0",
+    "wandb>=0.15",
+    "gdown>=4.7",
+    "opencv-python>=4.8",
+    "ultralytics>=8.0",
+    "ipywidgets>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+digit-classifier = "digit_classifier.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

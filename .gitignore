@@ -1,12 +1,26 @@
-.vscode
-.venv
-data/
-wandb/
-datasets/
-ckpt/
-trash/
-checkpoints/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
 
+# Virtual environment
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Data and artifacts
+data/
+datasets/
+checkpoints/
+wandb/
+ckpt/
+
+# OS
 .DS_Store
 
-__pycache__
+# Original source (reference only)
+_original/
