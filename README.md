@@ -6,6 +6,13 @@ https://github.com/user-attachments/assets/e00540d3-96e7-4360-9dc5-eb5e3a0b5e29
 https://github.com/user-attachments/assets/53767d51-1e46-442c-ae86-29178b18e6b4
 
 
+https://github.com/user-attachments/assets/7913d9f3-2399-483e-9ce6-53ac047e823b
+
+
+https://github.com/user-attachments/assets/b402ce11-aa25-47d0-b2e9-c745f2e88d0c
+
+
+
 A PyTorch training pipeline for digit classification using **ResNeXt** with
 YOLO-style augmentation, external dataset mixing, and comprehensive experiment
 tracking.
