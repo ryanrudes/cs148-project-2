@@ -198,16 +198,3 @@ def save_and_export(
             return hf_info
     except Exception as e:
         print(f"Exception: {e}")
-
-
-"""
-Example usage:
-hf_info = {
-    'username': '<your username>',
-    'token': '<paste here>',
-    'repo_name': 'ee148a-project',   # DON'T CHANGE
-    'filename': 'pipeline-cnn.pt'    # DON'T CHANGE
-}
-
-save_and_export(pipeline, hf_info)
-"""

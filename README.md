@@ -44,10 +44,36 @@ python -m digit_classifier infer --checkpoint checkpoints/<run_id>/best.pt
 # 5. Export compiled pipeline (TorchScript)
 
 This compiles the model _and_ preprocessing into a single TorchScript file
-that accepts raw image tensors and can be uploaded to the Hub.
+that accepts raw image tensors and can be uploaded to the Hub. The export
+uses the **EMA** model from the checkpoint.
+
+**Normalization (mean/std):** Checkpoints do not currently store mean/std.
+You must pass `--mean` and `--std` so the exported pipeline matches your
+training normalization. Get these from the training log (e.g. `mean=[0.13, 0.13, 0.13]`)
+or from your cached dataset. If omitted, 0.5/0.5 is used (likely incorrect).
 
 ```bash
-python -m digit_classifier export-pipeline --checkpoint checkpoints/<run_id>/best.pt --output pipeline-cnn.pt
+# RGB (3 channels) — use the mean/std printed during train
+python -m digit_classifier export-pipeline \
+  --checkpoint checkpoints/<run_id>/best.pt \
+  --output pipeline-cnn.pt \
+  --mean 0.13 0.13 0.13 \
+  --std 0.31 0.31 0.31
+
+# Grayscale (1 channel)
+python -m digit_classifier export-pipeline \
+  --checkpoint checkpoints/<run_id>/best.pt \
+  --output pipeline-cnn.pt \
+  --input-channels 1 \
+  --mean 0.13 \
+  --std 0.31
+
+# Upload to HuggingFace Hub
+python -m digit_classifier export-pipeline \
+  --checkpoint checkpoints/<run_id>/best.pt \
+  --output pipeline-cnn.pt \
+  --mean 0.13 0.13 0.13 --std 0.31 0.31 0.31 \
+  --push-to-hf --hf-repo <username>/<repo>
 ```
 
 ## Cloud training
@@ -96,7 +122,7 @@ python -m digit_classifier train
 | `preprocess` | Resize, colour-convert, compute mean/std and cache as `.npz` |
 | `train` | Run the full training pipeline |
 | `infer` | Real-time webcam digit recognition |
-| `export-pipeline` | Compile model + preprocessing into a TorchScript pipeline |
+| `export-pipeline` | Compile model + preprocessing into a TorchScript pipeline (uses EMA; pass `--mean`/`--std` if checkpoint lacks them) |
 | `visualize` | Debug-view augmented + mixed-up training batches |
 | `push-cache` | Push dataset caches to a HuggingFace Hub repo |
 | `pull-cache` | Pull dataset caches from a HuggingFace Hub repo |

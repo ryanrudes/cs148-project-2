@@ -124,16 +124,35 @@ def _handle_export_pipeline(args: argparse.Namespace) -> None:
     ).to(dev)
 
     ckpt = torch.load(args.checkpoint, map_location=dev, weights_only=False)
-    model.load_state_dict(_strip_compile_prefix(ckpt["model_state_dict"]))
+    state = ckpt.get("ema_state_dict", ckpt.get("model_state_dict"))
+    if state is None:
+        raise KeyError("Checkpoint must contain 'ema_state_dict' or 'model_state_dict'")
+    stripped = _strip_compile_prefix(state)
+    # Drop AveragedModel extras (e.g. n_averaged) — keep only keys the model expects
+    model_keys = set(model.state_dict().keys())
+    filtered = {k: v for k, v in stripped.items() if k in model_keys}
+    model.load_state_dict(filtered, strict=True)
     model.eval()
 
-    # determine mean/std from checkpoint if available (fallback to 0.5/0.5)
+    # determine mean/std: checkpoint > CLI args > fallback 0.5/0.5
     if "mean" in ckpt and "std" in ckpt:
-        mean = ckpt["mean"]
-        std = ckpt["std"]
+        mean = list(ckpt["mean"])
+        std = list(ckpt["std"])
+    elif args.mean is not None and args.std is not None:
+        mean = list(args.mean)
+        std = list(args.std)
+        if len(mean) != args.input_channels or len(std) != args.input_channels:
+            raise ValueError(
+                f"--mean and --std must have {args.input_channels} values each "
+                f"(got {len(mean)} and {len(std)})"
+            )
     else:
         mean = [0.5] * args.input_channels
         std = [0.5] * args.input_channels
+        print(
+            "Warning: Checkpoint has no mean/std; using 0.5/0.5. "
+            "Pass --mean and --std to match your training normalization."
+        )
 
     pipeline = DigitClassifierPipeline(
         model=model,
@@ -274,6 +293,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--hf-repo", help="HuggingFace repo id (e.g. username/repo)")
     ep.add_argument("--hf-filename", default="pipeline-cnn.pt", help="Filename to use on the Hub")
     ep.add_argument("--hf-token", help="HuggingFace token (optional; falls back to HF_TOKEN env var)")
+    ep.add_argument("--mean", type=float, nargs="+", help="Per-channel mean for normalization (e.g. 0.13 0.13 0.13 for RGB). Required if checkpoint lacks mean/std.")
+    ep.add_argument("--std", type=float, nargs="+", help="Per-channel std for normalization (e.g. 0.31 0.31 0.31 for RGB). Required if checkpoint lacks mean/std.")
 
     # --- push-cache ---
     pc = sub.add_parser("push-cache", help="Push dataset caches to HuggingFace Hub")

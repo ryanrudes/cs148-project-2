@@ -28,8 +28,12 @@ console = Console()
 # ---------------------------------------------------------------------------
 
 def _strip_compile_prefix(state_dict: dict) -> dict:
-    """Remove the ``_orig_mod.`` prefix that ``torch.compile`` inserts."""
-    return {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    """Remove ``_orig_mod.`` (torch.compile) and ``module.`` (AveragedModel) prefixes."""
+    result = {}
+    for k, v in state_dict.items():
+        key = k.replace("_orig_mod.", "").replace("module.", "")
+        result[key] = v
+    return result
 
 
 def _make_model_input(img_rgb: np.ndarray, size: int) -> np.ndarray:
