@@ -6,6 +6,7 @@ Usage::
     python -m digit_classifier preprocess --color --size 224 --name mnist_rgb_224
     python -m digit_classifier train [--epochs 900] [--lr 1e-3] ...
     python -m digit_classifier infer --checkpoint best.pt
+    python -m digit_classifier export-pipeline --checkpoint checkpoints/<run_id>/best.pt --output pipeline-cnn.pt
     python -m digit_classifier visualize [--num-batches 2]
 """
 
@@ -97,6 +98,64 @@ def _handle_infer(args: argparse.Namespace) -> None:
         smoothing_alpha=args.smoothing,
         device=args.device,
     )
+
+
+def _handle_export_pipeline(args: argparse.Namespace) -> None:
+    """Compile model + transforms into a TorchScript pipeline and save or push to HF Hub.
+
+    The handler mirrors the `infer` model construction so the exported pipeline
+    uses the same architecture and weights as the provided checkpoint.
+    """
+    import os
+    import torch
+
+    from digit_classifier.model import ResNeXt
+    from digit_classifier.pipeline import DigitClassifierPipeline
+    # reuse the small helper from inference to strip torch.compile prefixes
+    from digit_classifier.inference import _strip_compile_prefix
+
+    # load model to CPU for scripting
+    dev = torch.device("cpu")
+    model = ResNeXt(
+        layers=list(args.layers),
+        num_classes=args.num_classes,
+        groups=args.groups,
+        width_per_group=args.width_per_group,
+    ).to(dev)
+
+    ckpt = torch.load(args.checkpoint, map_location=dev, weights_only=False)
+    model.load_state_dict(_strip_compile_prefix(ckpt["model_state_dict"]))
+    model.eval()
+
+    # determine mean/std from checkpoint if available (fallback to 0.5/0.5)
+    if "mean" in ckpt and "std" in ckpt:
+        mean = ckpt["mean"]
+        std = ckpt["std"]
+    else:
+        mean = [0.5] * args.input_channels
+        std = [0.5] * args.input_channels
+
+    pipeline = DigitClassifierPipeline(
+        model=model,
+        input_size=args.size,
+        input_channels=args.input_channels,
+        mean=mean,
+        std=std,
+        device="cpu",
+    )
+
+    # Save locally
+    pipeline.save_pipeline_local(args.output)
+    print(f"Saved compiled pipeline to: {args.output}")
+
+    # Optionally push to HuggingFace Hub
+    if args.push_to_hf:
+        token = args.hf_token or os.environ.get("HF_TOKEN")
+        if not token:
+            raise RuntimeError("HF token required for --push-to-hf (set HF_TOKEN or pass --hf-token)")
+        if not args.hf_repo:
+            raise RuntimeError("--hf-repo is required when --push-to-hf is used")
+        pipeline.push_to_hub(token=token, repo_id=args.hf_repo, filename=args.hf_filename)
 
 
 def _handle_push_cache(args: argparse.Namespace) -> None:
@@ -198,6 +257,24 @@ def _build_parser() -> argparse.ArgumentParser:
     inf.add_argument("--smoothing", type=float, default=0.2)
     inf.add_argument("--device", default="auto")
 
+    # --- export-pipeline ---
+    ep = sub.add_parser(
+        "export-pipeline",
+        help="Compile model + transforms and save as a TorchScript pipeline",
+    )
+    ep.add_argument("--checkpoint", required=True, help="Path to .pt checkpoint")
+    ep.add_argument("--output", default="pipeline-cnn.pt", help="Local output path for compiled pipeline")
+    ep.add_argument("--layers", type=int, nargs="+", default=[3, 4, 23, 3])
+    ep.add_argument("--num-classes", type=int, default=10)
+    ep.add_argument("--groups", type=int, default=64)
+    ep.add_argument("--width-per-group", type=int, default=4)
+    ep.add_argument("--size", type=int, default=224, help="Model input size (height=width)")
+    ep.add_argument("--input-channels", type=int, choices=[1, 3], default=3)
+    ep.add_argument("--push-to-hf", action="store_true", help="Upload compiled pipeline to HuggingFace Hub (requires HF_TOKEN or --hf-token and --hf-repo)")
+    ep.add_argument("--hf-repo", help="HuggingFace repo id (e.g. username/repo)")
+    ep.add_argument("--hf-filename", default="pipeline-cnn.pt", help="Filename to use on the Hub")
+    ep.add_argument("--hf-token", help="HuggingFace token (optional; falls back to HF_TOKEN env var)")
+
     # --- push-cache ---
     pc = sub.add_parser("push-cache", help="Push dataset caches to HuggingFace Hub")
     pc.add_argument("--repo", required=True, help="HuggingFace repo id (e.g. user/dataset-name)")
@@ -240,6 +317,7 @@ def main() -> None:
         "preprocess": _handle_preprocess,
         "train": _handle_train,
         "infer": _handle_infer,
+        "export-pipeline": _handle_export_pipeline,
         "push-cache": _handle_push_cache,
         "pull-cache": _handle_pull_cache,
         "visualize": _handle_visualize,

@@ -40,6 +40,14 @@ python -m digit_classifier train
 
 # 4. Run webcam inference
 python -m digit_classifier infer --checkpoint checkpoints/<run_id>/best.pt
+
+# 5. Export compiled pipeline (TorchScript)
+
+This compiles the model _and_ preprocessing into a single TorchScript file
+that accepts raw image tensors and can be uploaded to the Hub.
+
+```bash
+python -m digit_classifier export-pipeline --checkpoint checkpoints/<run_id>/best.pt --output pipeline-cnn.pt
 ```
 
 ## Cloud training
@@ -88,6 +96,7 @@ python -m digit_classifier train
 | `preprocess` | Resize, colour-convert, compute mean/std and cache as `.npz` |
 | `train` | Run the full training pipeline |
 | `infer` | Real-time webcam digit recognition |
+| `export-pipeline` | Compile model + preprocessing into a TorchScript pipeline |
 | `visualize` | Debug-view augmented + mixed-up training batches |
 | `push-cache` | Push dataset caches to a HuggingFace Hub repo |
 | `pull-cache` | Pull dataset caches from a HuggingFace Hub repo |
