@@ -1,6 +1,6 @@
 # Digit Classifier
 
-<video src="figs/demo.mov" width="640" controls></video>
+https://github.com/user-attachments/assets/e00540d3-96e7-4360-9dc5-eb5e3a0b5e29
 
 A PyTorch training pipeline for digit classification using **ResNeXt** with
 YOLO-style augmentation, external dataset mixing, and comprehensive experiment
