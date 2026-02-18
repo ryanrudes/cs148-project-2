@@ -89,10 +89,13 @@ def run_inference(
     groups: int = 64,
     width_per_group: int = 4,
     input_size: int = 224,
+    input_channels: int = 3,
     camera_index: int = 0,
     smoothing_alpha: float = 0.2,
     bar_panel_width: int = 320,
     device: str = "auto",
+    mean: list[float] | tuple[float, ...] | None = None,
+    std: list[float] | tuple[float, ...] | None = None,
 ) -> None:
     """Launch a real-time webcam inference window."""
     # --- Device ---
@@ -114,20 +117,38 @@ def run_inference(
     ).to(dev)
 
     ckpt = torch.load(checkpoint_path, map_location=dev, weights_only=False)
-    model.load_state_dict(_strip_compile_prefix(ckpt["model_state_dict"]))
+    state = ckpt.get("ema_state_dict", ckpt.get("model_state_dict"))
+    if state is None:
+        raise KeyError("Checkpoint must contain 'ema_state_dict' or 'model_state_dict'")
+    stripped = _strip_compile_prefix(state)
+    model_keys = set(model.state_dict().keys())
+    filtered = {k: v for k, v in stripped.items() if k in model_keys}
+    model.load_state_dict(filtered, strict=True)
     model.eval()
     console.print(f"Loaded checkpoint: [cyan]{checkpoint_path}[/cyan]")
 
-    # --- Mean / std from checkpoint or defaults ---
-    if "mean" in ckpt:
-        mean = np.array(ckpt["mean"], dtype=np.float32)
-        std = np.array(ckpt["std"], dtype=np.float32)
+    # --- Mean / std: checkpoint > CLI args > fallback 0.5/0.5 ---
+    if "mean" in ckpt and "std" in ckpt:
+        mean_arr = np.array(ckpt["mean"], dtype=np.float32)
+        std_arr = np.array(ckpt["std"], dtype=np.float32)
+    elif mean is not None and std is not None:
+        mean_arr = np.array(mean, dtype=np.float32)
+        std_arr = np.array(std, dtype=np.float32)
+        if len(mean_arr) != input_channels or len(std_arr) != input_channels:
+            raise ValueError(
+                f"--mean and --std must have {input_channels} values each "
+                f"(got {len(mean_arr)} and {len(std_arr)})"
+            )
     else:
-        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32)
-        std = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+        mean_arr = np.array([0.5] * input_channels, dtype=np.float32)
+        std_arr = np.array([0.5] * input_channels, dtype=np.float32)
+        console.print(
+            "[yellow]Warning:[/yellow] Checkpoint has no mean/std; using 0.5/0.5. "
+            "Pass --mean and --std to match your training normalization."
+        )
 
-    mean_t = torch.tensor(mean).view(1, 3, 1, 1)
-    std_t = torch.tensor(std).view(1, 3, 1, 1)
+    mean_t = torch.tensor(mean_arr).view(1, input_channels, 1, 1)
+    std_t = torch.tensor(std_arr).view(1, input_channels, 1, 1)
 
     # --- Camera loop ---
     cap = cv2.VideoCapture(camera_index)
@@ -144,7 +165,10 @@ def run_inference(
         img_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         model_input_rgb = _make_model_input(img_rgb, input_size)
 
-        tensor = torch.from_numpy(model_input_rgb).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+        arr = model_input_rgb
+        if input_channels == 1:
+            arr = np.mean(arr, axis=2, keepdims=True)
+        tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).float() / 255.0
         tensor = (tensor - mean_t) / std_t
         tensor = tensor.to(dev)
 

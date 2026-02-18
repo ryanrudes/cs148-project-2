@@ -94,9 +94,12 @@ def _handle_infer(args: argparse.Namespace) -> None:
         groups=args.groups,
         width_per_group=args.width_per_group,
         input_size=args.size,
+        input_channels=args.input_channels,
         camera_index=args.camera,
         smoothing_alpha=args.smoothing,
         device=args.device,
+        mean=args.mean,
+        std=args.std,
     )
 
 
@@ -272,9 +275,12 @@ def _build_parser() -> argparse.ArgumentParser:
     inf.add_argument("--groups", type=int, default=64)
     inf.add_argument("--width-per-group", type=int, default=4)
     inf.add_argument("--size", type=int, default=224)
+    inf.add_argument("--input-channels", type=int, choices=[1, 3], default=3)
     inf.add_argument("--camera", type=int, default=0)
     inf.add_argument("--smoothing", type=float, default=0.2)
     inf.add_argument("--device", default="auto")
+    inf.add_argument("--mean", type=float, nargs="+", help="Per-channel mean (e.g. 0.57 0.52 0.48). Required if checkpoint lacks mean/std.")
+    inf.add_argument("--std", type=float, nargs="+", help="Per-channel std (e.g. 0.23 0.23 0.23). Required if checkpoint lacks mean/std.")
 
     # --- export-pipeline ---
     ep = sub.add_parser(

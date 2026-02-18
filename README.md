@@ -38,8 +38,9 @@ python -m digit_classifier preprocess --name mnist_rgb_224 --color --size 224
 # 3. Train (runs external dataset download + dedup on first run)
 python -m digit_classifier train
 
-# 4. Run webcam inference
-python -m digit_classifier infer --checkpoint checkpoints/<run_id>/best.pt
+# 4. Run webcam inference (uses EMA model; pass --mean/--std if checkpoint lacks them)
+python -m digit_classifier infer --checkpoint checkpoints/<run_id>/best.pt \
+  --mean 0.57 0.52 0.48 --std 0.23 0.23 0.23
 
 # 5. Export compiled pipeline (TorchScript)
 
@@ -121,7 +122,7 @@ python -m digit_classifier train
 | `download` | Fetch the raw JPEG archive from Google Drive |
 | `preprocess` | Resize, colour-convert, compute mean/std and cache as `.npz` |
 | `train` | Run the full training pipeline |
-| `infer` | Real-time webcam digit recognition |
+| `infer` | Real-time webcam digit recognition (uses EMA; pass `--mean`/`--std` if checkpoint lacks them) |
 | `export-pipeline` | Compile model + preprocessing into a TorchScript pipeline (uses EMA; pass `--mean`/`--std` if checkpoint lacks them) |
 | `visualize` | Debug-view augmented + mixed-up training batches |
 | `push-cache` | Push dataset caches to a HuggingFace Hub repo |
