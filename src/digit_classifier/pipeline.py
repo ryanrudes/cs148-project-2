@@ -32,6 +32,8 @@ class DigitClassifierPipeline(nn.Module):
         # scripted module without constructing tensors at runtime.
         self.input_size = input_size
         self.input_channels = input_channels
+        self.input_height = input_size
+        self.input_width = input_size
         self.mean = tuple(mean)
         self.std = tuple(std)
 
@@ -86,28 +88,45 @@ class DigitClassifierPipeline(nn.Module):
         img = (img - self.mean_tensor) / self.std_tensor
         return img
 
+    @torch.jit.export
+    def preprocess_layers(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Preprocess a single image tensor (C, H, W) from ToTensor output.
+
+        Compatible with verify_pipeline.py: takes float [0,1] CHW, returns
+        resized, cropped, normalized tensor (C, input_size, input_size).
+        """
+        return self._preprocess_tensor(tensor)
+
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """
-        The main entry point for the scripted pipeline.
+        Run inference on image tensors.
 
-        Accepts either a single image `Tensor(C, H, W)` or a batched tensor
-        `Tensor(B, C, H, W)`. The input may be `uint8` (0-255) or a float
-        tensor; preprocessing (resize / crop / dtype / normalize) is applied
-        automatically so the exported model can be used from raw image tensors.
+        Accepts preprocessed tensors `Tensor(B, C, H, W)` from preprocess_layers
+        (verify_pipeline.py flow), or raw tensors `Tensor(C,H,W)` / `Tensor(B,C,H,W)`
+        (uint8 or float [0,1]); raw input is preprocessed automatically.
 
         Returns class indices `Tensor(B,)`.
         """
         x = images
-        # ensure batch dimension
         if x.dim() == 3:
             x = x.unsqueeze(0)
 
-        processed: list[torch.Tensor] = []
-        for i in range(x.shape[0]):
-            processed.append(self._preprocess_tensor(x[i]))
+        # If already preprocessed (correct spatial size, float32 from preprocess_layers), run model directly
+        _, c, h, w = x.shape
+        if (
+            h == self.input_size
+            and w == self.input_size
+            and x.dtype == torch.float32
+        ):
+            batch = x.to(self.device)
+        else:
+            # Raw input: preprocess each image
+            processed: list[torch.Tensor] = []
+            for i in range(x.shape[0]):
+                processed.append(self._preprocess_tensor(x[i]))
+            batch = torch.stack(processed, dim=0).to(self.device)
 
-        processed_tensor = torch.stack(processed, dim=0).to(self.device)
-        logits = self.model(processed_tensor)
+        logits = self.model(batch)
         predictions = torch.argmax(logits, dim=1)
         return predictions
 

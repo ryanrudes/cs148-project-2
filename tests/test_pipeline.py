@@ -1,7 +1,7 @@
 import pytest
 
 try:
-    from torchvision import v2 as _tv_v2  # ensure v2 is available for these tests
+    from torchvision.transforms import v2 as _tv_v2  # ensure v2 is available for these tests
 except Exception:  # pragma: no cover - environment without torchvision v2
     pytest.skip("torchvision v2 required for pipeline tests", allow_module_level=True)
 
@@ -77,3 +77,43 @@ def test_pipeline_run_and_script_save(tmp_path):
     assert isinstance(scripted_preds, torch.Tensor)
     assert scripted_preds.shape == (1,)
     assert int(scripted_preds[0]) == 3
+
+
+def test_pipeline_verify_compatible(tmp_path):
+    """Mimic verify_pipeline.py flow: preprocess_layers + forward on preprocessed batch."""
+    from torchvision import transforms
+
+    model = DummyModel()
+    pipeline = DigitClassifierPipeline(
+        model=model,
+        input_size=32,
+        input_channels=3,
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+        device="cpu",
+    )
+
+    # verify_pipeline expects these attributes
+    assert hasattr(pipeline, "preprocess_layers")
+    assert pipeline.input_channels == 3
+    assert pipeline.input_height == 32
+    assert pipeline.input_width == 32
+
+    # Generate test image like verify_pipeline (PIL RGB, then ToTensor)
+    pil = Image.new("RGB", (128, 256), color=(100, 150, 200))
+    tensor = transforms.ToTensor()(pil)  # (C, H, W) float [0, 1]
+    preprocessed = pipeline.preprocess_layers(tensor)
+    assert preprocessed.shape == (3, 32, 32)
+
+    # Stack and run forward (verify_pipeline flow)
+    batch = torch.stack([preprocessed, preprocessed]).to("cpu")
+    preds = pipeline(batch)
+    assert preds.shape == (2,)
+    assert preds.tolist() == [3, 3]
+
+    # Scripted pipeline must also have preprocess_layers and attributes
+    pipeline.save_pipeline_local(str(tmp_path / "pipeline.pt"))
+    loaded = torch.jit.load(str(tmp_path / "pipeline.pt"))
+    assert hasattr(loaded, "preprocess_layers")
+    assert loaded.input_height == 32
+    assert loaded.input_width == 32
