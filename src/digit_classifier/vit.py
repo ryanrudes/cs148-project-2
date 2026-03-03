@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 import torch.nn as nn
 
@@ -42,6 +43,9 @@ class DeiTConfig:
 
     # LayerScale
     init_values: float = 1e-4
+
+    # Attention backend: when True, use F.scaled_dot_product_attention (Flash Attention when available)
+    use_flash_attention: bool = False
 
 
 class DropPath(nn.Module):
@@ -122,12 +126,22 @@ class MLP(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, qkv_bias: bool, attn_drop: float, proj_drop: float):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        qkv_bias: bool,
+        attn_drop: float,
+        proj_drop: float,
+        use_flash_attention: bool = False,
+    ):
         super().__init__()
         assert dim % num_heads == 0, "hidden_size must be divisible by num_heads"
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
+        self.use_flash_attention = use_flash_attention
+        self.attn_drop_p = attn_drop
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -141,11 +155,18 @@ class Attention(nn.Module):
         qkv = qkv.reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]  # each: (B, H, N, D)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, H, N, N)
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        if self.use_flash_attention:
+            out = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.attn_drop_p if self.training else 0.0,
+                scale=self.scale,
+            )
+        else:
+            attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, H, N, N)
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            out = attn @ v  # (B, H, N, D)
 
-        out = attn @ v  # (B, H, N, D)
         out = out.transpose(1, 2).reshape(B, N, C)  # (B, N, C)
         out = self.proj(out)
         out = self.proj_drop(out)
@@ -166,6 +187,7 @@ class Block(nn.Module):
             qkv_bias=config.qkv_bias,
             attn_drop=config.attn_drop,
             proj_drop=config.proj_drop,
+            use_flash_attention=config.use_flash_attention,
         )
         self.ls1 = LayerScale(dim, init_values=config.init_values)
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -259,10 +281,12 @@ def deit3_tiny_patch16_224(
     num_classes: int = 10,
     drop_path_rate: float | None = None,
     image_size: int = 224,
+    use_flash_attention: bool = False,
 ) -> DeiT3:
     cfg = DeiTConfig(
         hidden_size=192, depth=12, num_heads=3, num_classes=num_classes,
         image_size=image_size,
+        use_flash_attention=use_flash_attention,
     )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
@@ -273,10 +297,12 @@ def deit3_small_patch16_224(
     num_classes: int = 10,
     drop_path_rate: float | None = None,
     image_size: int = 224,
+    use_flash_attention: bool = False,
 ) -> DeiT3:
     cfg = DeiTConfig(
         hidden_size=384, depth=12, num_heads=6, num_classes=num_classes,
         image_size=image_size,
+        use_flash_attention=use_flash_attention,
     )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
@@ -287,10 +313,12 @@ def deit3_base_patch16_224(
     num_classes: int = 10,
     drop_path_rate: float | None = None,
     image_size: int = 224,
+    use_flash_attention: bool = False,
 ) -> DeiT3:
     cfg = DeiTConfig(
         hidden_size=768, depth=12, num_heads=12, num_classes=num_classes,
         image_size=image_size,
+        use_flash_attention=use_flash_attention,
     )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate

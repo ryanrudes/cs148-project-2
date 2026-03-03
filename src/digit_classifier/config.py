@@ -36,6 +36,7 @@ class ModelConfig:
     groups: int = 64
     width_per_group: int = 4
     drop_path_rate: float = 0.1
+    use_flash_attention: bool = False
 
 
 @dataclass
