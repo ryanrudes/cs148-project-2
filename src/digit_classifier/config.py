@@ -79,6 +79,9 @@ class TrainingConfig:
     label_smoothing: float = 0.1
     mixup_off_last_n: int = 10
     grad_clip_norm: float = 1.0
+    weight_decay_exclude: bool = True
+    layer_decay: float = 0.0
+    amp_enabled: bool = True
     compile_model: bool = True
     wandb_enabled: bool = True
     wandb_project: str = "CS148-MNIST"

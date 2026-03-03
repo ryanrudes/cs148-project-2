@@ -12,6 +12,7 @@ Preserves every behavioural invariant from the original pipeline:
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from multiprocessing import cpu_count, freeze_support
 
 import numpy as np
@@ -105,6 +106,74 @@ def select_train_criterion(active_mixup: MixupCutmixApply | None) -> nn.Module:
 
 
 # ---------------------------------------------------------------------------
+# Parameter groups (weight decay exclusion, layer-wise LR decay)
+# ---------------------------------------------------------------------------
+
+def _get_layer_id_for_vit(name: str, num_blocks: int) -> int:
+    """Assign layer ID for ViT/DeiT. Embedding=0, blocks=1..depth, norm+head=depth+1."""
+    if name.startswith("patch_embed") or name.startswith("cls_token") or name.startswith("pos_embed"):
+        return 0
+    if name.startswith("blocks."):
+        # blocks.0.xxx -> 1, blocks.1.xxx -> 2, ...
+        block_idx = int(name.split(".")[1])
+        return block_idx + 1
+    return num_blocks + 1
+
+
+def _get_param_groups(
+    model: nn.Module,
+    lr: float,
+    weight_decay: float,
+    weight_decay_exclude: bool,
+    layer_decay: float,
+) -> list[dict]:
+    """Build param groups with optional weight decay exclusion and layer-wise LR decay."""
+    if not weight_decay_exclude and layer_decay <= 0:
+        return [{"params": list(model.parameters()), "lr": lr, "weight_decay": weight_decay}]
+
+    # Count transformer blocks for layer decay
+    num_blocks = max(
+        (int(n.split(".")[1]) for n in model.state_dict() if n.startswith("blocks.")),
+        default=-1,
+    ) + 1
+    num_layers = num_blocks + 2  # embedding + blocks + norm/head
+
+    groups: dict[tuple[int, float], list[torch.nn.Parameter]] = {}
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        # Weight decay: exclude 1D params (bias), LayerNorm, LayerScale gamma
+        if weight_decay_exclude and (
+            param.ndim <= 1 or "norm" in name or "bias" in name or "gamma" in name
+        ):
+            wd = 0.0
+        else:
+            wd = weight_decay
+
+        # Layer ID for LR scaling
+        if num_blocks > 0:
+            layer_id = _get_layer_id_for_vit(name, num_blocks)
+        else:
+            layer_id = 0
+
+        key = (layer_id, wd)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(param)
+
+    param_groups = []
+    for (layer_id, wd), params in sorted(groups.items()):
+        if num_blocks > 0 and layer_decay > 0:
+            lr_scale = layer_decay ** (num_layers - 1 - layer_id)
+        else:
+            lr_scale = 1.0
+        param_groups.append({"params": params, "lr": lr * lr_scale, "weight_decay": wd})
+    return param_groups
+
+
+# ---------------------------------------------------------------------------
 # Warm-restart epoch computation
 # ---------------------------------------------------------------------------
 
@@ -140,12 +209,14 @@ def train_epoch(
     mixup_fn: MixupCutmixApply | None = None,
     ema: AveragedModel | None = None,
     grad_clip_norm: float = 1.0,
+    use_amp: bool = True,
 ) -> dict[str, float]:
     """Run one training epoch and return computed metrics + loss."""
     model.train()
     running_loss = 0.0
     num_batches = 0
     pin = device.type == "cuda"
+    amp_ctx = autocast(device_type=device.type) if use_amp else nullcontext()
 
     for images, labels in loader:
         if images.dtype != torch.float32:
@@ -158,7 +229,7 @@ def train_epoch(
 
         optimizer.zero_grad()
 
-        with autocast(device_type=device.type):
+        with amp_ctx:
             logits = model(images)
             loss = criterion(logits, labels)
 
@@ -191,12 +262,14 @@ def validate(
     criterion: nn.Module,
     metrics: dict[str, Metric],
     device: torch.device,
+    use_amp: bool = True,
 ) -> dict[str, float]:
     """Run one validation pass and return computed metrics + loss."""
     model.eval()
     running_loss = 0.0
     num_batches = 0
     pin = device.type == "cuda"
+    amp_ctx = autocast(device_type=device.type) if use_amp else nullcontext()
 
     with torch.no_grad():
         for images, labels in loader:
@@ -205,7 +278,7 @@ def validate(
             images = images.to(device, non_blocking=pin)
             labels = labels.long().to(device, non_blocking=pin)
 
-            with autocast(device_type=device.type):
+            with amp_ctx:
                 logits = model(images)
                 loss = criterion(logits, labels)
 
@@ -383,7 +456,16 @@ def train(cfg: Config) -> None:
     model = deit3_base_patch16_224(
         num_classes=cfg.model.num_classes,
         drop_path_rate=cfg.model.drop_path_rate,
+        image_size=cfg.data.image_size,
     ).to(device)
+
+    param_groups = _get_param_groups(
+        model,
+        lr=tc.lr,
+        weight_decay=tc.weight_decay,
+        weight_decay_exclude=tc.weight_decay_exclude,
+        layer_decay=tc.layer_decay,
+    )
 
     if tc.compile_model:
         model = torch.compile(model)
@@ -394,7 +476,7 @@ def train(cfg: Config) -> None:
         ema = None
 
     # --- Optimiser & scheduler ---
-    optimizer = torch.optim.AdamW(model.parameters(), lr=tc.lr, weight_decay=tc.weight_decay)
+    optimizer = torch.optim.AdamW(param_groups)
 
     warmup_sched = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, total_iters=tc.warmup_epochs)
 
@@ -422,7 +504,7 @@ def train(cfg: Config) -> None:
     # --- Metrics ---
     metrics = _build_metrics(cfg.model.num_classes, device)
     val_criterion = nn.CrossEntropyLoss()
-    scaler = GradScaler(enabled=(device.type == "cuda"))
+    scaler = GradScaler(enabled=(device.type == "cuda" and tc.amp_enabled))
 
     # --- Wandb ---
     # Resolve the effective batch size for logging (batch_sampler → None for .batch_size)
@@ -460,10 +542,11 @@ def train(cfg: Config) -> None:
         train_metrics = train_epoch(
             model, train_loader, train_criterion, optimizer, metrics, scaler,
             device, mixup_fn=active_mixup, ema=ema, grad_clip_norm=tc.grad_clip_norm,
+            use_amp=tc.amp_enabled,
         )
-        val_metrics_raw = validate(model, val_loader, val_criterion, metrics, device)
+        val_metrics_raw = validate(model, val_loader, val_criterion, metrics, device, use_amp=tc.amp_enabled)
         if ema is not None:
-            val_metrics_ema = validate(ema, val_loader, val_criterion, metrics, device)
+            val_metrics_ema = validate(ema, val_loader, val_criterion, metrics, device, use_amp=tc.amp_enabled)
         else:
             # without EMA the raw and EMA scores are identical; make a shallow
             # copy to prevent accidental mutation later on

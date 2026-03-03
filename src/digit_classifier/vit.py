@@ -255,22 +255,43 @@ class DeiT3(nn.Module):
 
 # Convenience builders matching common DeiT-III sizes
 
-def deit3_tiny_patch16_224(num_classes: int = 10, drop_path_rate: float | None = None) -> DeiT3:
-    cfg = DeiTConfig(hidden_size=192, depth=12, num_heads=3, num_classes=num_classes)
+def deit3_tiny_patch16_224(
+    num_classes: int = 10,
+    drop_path_rate: float | None = None,
+    image_size: int = 224,
+) -> DeiT3:
+    cfg = DeiTConfig(
+        hidden_size=192, depth=12, num_heads=3, num_classes=num_classes,
+        image_size=image_size,
+    )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
     return DeiT3(cfg)
 
 
-def deit3_small_patch16_224(num_classes: int = 10, drop_path_rate: float | None = None) -> DeiT3:
-    cfg = DeiTConfig(hidden_size=384, depth=12, num_heads=6, num_classes=num_classes)
+def deit3_small_patch16_224(
+    num_classes: int = 10,
+    drop_path_rate: float | None = None,
+    image_size: int = 224,
+) -> DeiT3:
+    cfg = DeiTConfig(
+        hidden_size=384, depth=12, num_heads=6, num_classes=num_classes,
+        image_size=image_size,
+    )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
     return DeiT3(cfg)
 
 
-def deit3_base_patch16_224(num_classes: int = 10, drop_path_rate: float | None = None) -> DeiT3:
-    cfg = DeiTConfig(hidden_size=768, depth=12, num_heads=12, num_classes=num_classes)
+def deit3_base_patch16_224(
+    num_classes: int = 10,
+    drop_path_rate: float | None = None,
+    image_size: int = 224,
+) -> DeiT3:
+    cfg = DeiTConfig(
+        hidden_size=768, depth=12, num_heads=12, num_classes=num_classes,
+        image_size=image_size,
+    )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
     return DeiT3(cfg)

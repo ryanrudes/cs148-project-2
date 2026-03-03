@@ -289,12 +289,17 @@ def split_dataset(
     setattr(train_dataset, "num_original", num_original_train)
 
     # ------------------------------------------------------------------
-    # Validation dataset (normalise only)
+    # Validation dataset (resize to target size, then normalise)
     # ------------------------------------------------------------------
+    val_transform = T.Compose([
+        T.Resize(size),
+        T.CenterCrop((size, size)),
+        T.Normalize(mean=mean_t, std=std_t),
+    ])
     val_dataset = DigitDataset(
         images=val_images,
         labels=val_labels,
-        transform=ApplyTransform(T.Normalize(mean=mean_t, std=std_t)),
+        transform=ApplyTransform(val_transform),
     )
 
     console.print(f"[bold green]Dataset ready:[/bold green] {len(train_dataset):,} train / {len(val_dataset):,} val")

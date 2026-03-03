@@ -78,6 +78,9 @@ def _handle_train(args: argparse.Namespace) -> None:
             label_smoothing=args.label_smoothing,
             mixup_off_last_n=args.mixup_off_last_n,
             grad_clip_norm=args.grad_clip_norm,
+            weight_decay_exclude=args.weight_decay_exclude,
+            layer_decay=args.layer_decay,
+            amp_enabled=args.amp_enabled,
             compile_model=not args.no_compile,
             wandb_enabled=not args.no_wandb,
             wandb_project=args.wandb_project,
@@ -265,6 +268,12 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--label-smoothing", type=float, default=0.1)
     tr.add_argument("--mixup-off-last-n", type=int, default=10)
     tr.add_argument("--grad-clip-norm", type=float, default=1.0)
+    tr.add_argument("--no-weight-decay-exclusion", dest="weight_decay_exclude", action="store_false", default=True,
+                    help="Apply weight decay to all params (default: exclude LayerNorm, bias, LayerScale)")
+    tr.add_argument("--layer-decay", type=float, default=0.0,
+                    help="Layer-wise LR decay (e.g. 0.75). 0 disables. Earlier layers get lower LR.")
+    tr.add_argument("--no-amp", dest="amp_enabled", action="store_false", default=True,
+                    help="Disable mixed precision (autocast); use float32 for stability")
     tr.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
     tr.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     tr.add_argument("--no-ema", action="store_true", help="Disable EMA")
