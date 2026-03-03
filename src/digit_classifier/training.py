@@ -3,8 +3,8 @@
 Preserves every behavioural invariant from the original pipeline:
 
 - Dynamic loss switching via :func:`select_train_criterion`.
-- EMA model with ``use_buffers=True``.
-- Warm-restart scheduler with pre-restart checkpoints.
+- Optional EMA model with ``use_buffers=True`` (can be disabled via config).
+- Warm-restart scheduler with pre-restart checkpoints (can be turned off via config).
 - ``RatioBatchSampler`` when external data is present.
 - Mixup / CutMix disabled for the final *N* epochs.
 """
@@ -25,6 +25,7 @@ from timm.loss import SoftTargetCrossEntropy
 from torch import Tensor
 from torch.amp import GradScaler, autocast
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
 from torchmetrics import Accuracy, F1Score, Metric
 
@@ -32,6 +33,7 @@ from digit_classifier.config import Config
 from digit_classifier.external import DEFAULT_EXTERNAL_FRACTIONS
 from digit_classifier.mixup import MixupCutmixApply, create_mixup_cutmix
 from digit_classifier.model import ResNeXt
+from digit_classifier.vit import deit3_base_patch16_224
 from digit_classifier.sampler import RatioBatchSampler
 from digit_classifier.splitting import split_dataset
 
@@ -366,6 +368,7 @@ def train(cfg: Config) -> None:
     ))
 
     # --- Model ---
+    """
     model_name = "ResNeXt"  # Capture before torch.compile changes __class__
     model = ResNeXt(
         layers=list(cfg.model.layers),
@@ -374,25 +377,41 @@ def train(cfg: Config) -> None:
         width_per_group=cfg.model.width_per_group,
         drop_path_rate=cfg.model.drop_path_rate,
     ).to(device)
+    """
+
+    model_name = "deit3_base_patch16_224"
+    model = deit3_base_patch16_224(num_classes=cfg.model.num_classes).to(device)
 
     if tc.compile_model:
         model = torch.compile(model)
 
-    ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(tc.ema_decay), use_buffers=True)
+    if tc.ema_enabled:
+        ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(tc.ema_decay), use_buffers=True)
+    else:
+        ema = None
 
     # --- Optimiser & scheduler ---
     optimizer = torch.optim.AdamW(model.parameters(), lr=tc.lr, weight_decay=tc.weight_decay)
 
     warmup_sched = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, total_iters=tc.warmup_epochs)
-    main_sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=tc.scheduler_t0, T_mult=tc.scheduler_t_mult, eta_min=tc.eta_min,
-    )
+
+    if tc.warm_restarts:
+        main_sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=tc.scheduler_t0, T_mult=tc.scheduler_t_mult, eta_min=tc.eta_min,
+        )
+        warm_restart_epochs = compute_warm_restart_epochs(
+            tc.warmup_epochs, tc.scheduler_t0, tc.scheduler_t_mult, tc.epochs,
+        )
+    else:
+        # simple cosine schedule for the remainder of training (single cycle)
+        cycles = max(1, tc.epochs - tc.warmup_epochs)
+        main_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cycles, eta_min=tc.eta_min,
+        )
+        warm_restart_epochs = []
+
     scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer, schedulers=[warmup_sched, main_sched], milestones=[tc.warmup_epochs],
-    )
-
-    warm_restart_epochs = compute_warm_restart_epochs(
-        tc.warmup_epochs, tc.scheduler_t0, tc.scheduler_t_mult, tc.epochs,
     )
     if warm_restart_epochs:
         console.print(f"[bold]Warm-restart epochs:[/bold] {warm_restart_epochs}")
@@ -440,20 +459,27 @@ def train(cfg: Config) -> None:
             device, mixup_fn=active_mixup, ema=ema, grad_clip_norm=tc.grad_clip_norm,
         )
         val_metrics_raw = validate(model, val_loader, val_criterion, metrics, device)
-        val_metrics_ema = validate(ema, val_loader, val_criterion, metrics, device)
+        if ema is not None:
+            val_metrics_ema = validate(ema, val_loader, val_criterion, metrics, device)
+        else:
+            # without EMA the raw and EMA scores are identical; make a shallow
+            # copy to prevent accidental mutation later on
+            val_metrics_ema = dict(val_metrics_raw)
 
         # --- Pre-restart checkpoint (before scheduler.step) ---
         if warm_restart_epochs and (epoch + 1) in warm_restart_epochs:
             ckpt_root = checkpoint_dir if "checkpoint_dir" in dir() else "checkpoints"
             os.makedirs(ckpt_root, exist_ok=True)
             pre_path = os.path.join(ckpt_root, f"pre_restart_epoch_{epoch + 1}.pt")
-            torch.save({
+            save_dict: dict[str, object] = {
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
-                "ema_state_dict": ema.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_accuracy": val_metrics_ema.get("accuracy"),
-            }, pre_path)
+            }
+            if ema is not None:
+                save_dict["ema_state_dict"] = ema.state_dict()
+            torch.save(save_dict, pre_path)
             console.print(f"[magenta]Saved pre-restart checkpoint:[/magenta] {pre_path}")
 
             if tc.wandb_enabled:
@@ -485,13 +511,15 @@ def train(cfg: Config) -> None:
         if tc.wandb_enabled and val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
             ckpt_path = os.path.join(checkpoint_dir, "best.pt")
-            torch.save({
+            save_dict = {
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
-                "ema_state_dict": ema.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_accuracy": val_accuracy,
-            }, ckpt_path)
+            }
+            if ema is not None:
+                save_dict["ema_state_dict"] = ema.state_dict()
+            torch.save(save_dict, ckpt_path)
 
             art = wandb.Artifact("model-best", type="model",
                                  metadata={"epoch": epoch + 1, "val_accuracy": val_accuracy})

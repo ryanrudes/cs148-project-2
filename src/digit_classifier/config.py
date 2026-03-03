@@ -68,6 +68,9 @@ class TrainingConfig:
     scheduler_t0: int = 50
     scheduler_t_mult: int = 2
     ema_decay: float = 0.995
+    ema_enabled: bool = True
+    # toggle cosine warm-restarts; when False use a single cycle CosineAnnealingLR
+    warm_restarts: bool = True
     mixup_alpha: float = 0.2
     cutmix_alpha: float = 1.0
     cutmix_minmax: tuple[float, float] = (0.02, 0.45)

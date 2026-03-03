@@ -69,6 +69,8 @@ def _handle_train(args: argparse.Namespace) -> None:
             scheduler_t0=args.scheduler_t0,
             scheduler_t_mult=args.scheduler_t_mult,
             ema_decay=args.ema_decay,
+            ema_enabled=not args.no_ema,
+            warm_restarts=not args.no_warm_restarts,
             mixup_alpha=args.mixup_alpha,
             cutmix_alpha=args.cutmix_alpha,
             mixup_prob=args.mixup_prob,
@@ -265,6 +267,9 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--grad-clip-norm", type=float, default=1.0)
     tr.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
     tr.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    tr.add_argument("--no-ema", action="store_true", help="Disable EMA")
+    tr.add_argument("--no-warm-restarts", action="store_true",
+                        help="Disable cosine warm-restart scheduler")
     tr.add_argument("--wandb-project", default="CS148-MNIST")
 
     # --- infer ---
