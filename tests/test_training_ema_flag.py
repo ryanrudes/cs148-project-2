@@ -52,7 +52,7 @@ def stub_dataset_and_model(monkeypatch):
         return ds, ds, None, None
 
     monkeypatch.setattr(training, "split_dataset", fake_split)
-    monkeypatch.setattr(training, "deit3_base_patch16_224", lambda num_classes: TinyModel(num_classes))
+    monkeypatch.setattr(training, "deit3_base_patch16_224", lambda num_classes=10, drop_path_rate=None: TinyModel(num_classes))
 
     # make wandb a no-op; training expects ``wandb.run.id`` later so
     # include a dummy ``run`` object with a constant identifier.

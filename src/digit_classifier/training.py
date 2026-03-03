@@ -380,7 +380,10 @@ def train(cfg: Config) -> None:
     """
 
     model_name = "deit3_base_patch16_224"
-    model = deit3_base_patch16_224(num_classes=cfg.model.num_classes).to(device)
+    model = deit3_base_patch16_224(
+        num_classes=cfg.model.num_classes,
+        drop_path_rate=cfg.model.drop_path_rate,
+    ).to(device)
 
     if tc.compile_model:
         model = torch.compile(model)
