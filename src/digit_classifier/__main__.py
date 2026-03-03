@@ -48,6 +48,8 @@ def _handle_train(args: argparse.Namespace) -> None:
             color=args.color,
             train_fraction=args.train_fraction,
             batch_size=args.batch_size,
+            repeat_aug=args.repeat_aug,
+            repeat_aug_repeats=args.repeat_aug_repeats,
             split_seed=args.seed,
             mix_external=args.mix_external,
             primary_fraction=args.primary_fraction,
@@ -59,6 +61,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             width_per_group=args.width_per_group,
             drop_path_rate=args.drop_path_rate,
             use_flash_attention=args.use_flash_attention,
+            deit_model=args.deit_model,
         ),
         augment=AugmentConfig(),
         training=TrainingConfig(
@@ -79,6 +82,8 @@ def _handle_train(args: argparse.Namespace) -> None:
             label_smoothing=args.label_smoothing,
             bce_loss=args.bce_loss,
             mixup_off_last_n=args.mixup_off_last_n,
+            drop_path_increment=args.drop_path_increment,
+            drop_path_increment_every=args.drop_path_increment_every,
             grad_clip_norm=args.grad_clip_norm,
             weight_decay_exclude=args.weight_decay_exclude,
             layer_decay=args.layer_decay,
@@ -245,6 +250,10 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--color", action="store_true", default=True)
     tr.add_argument("--train-fraction", type=float, default=0.9)
     tr.add_argument("--batch-size", type=int, default=128)
+    tr.add_argument("--repeat-aug", action="store_true",
+                    help="Enable repeated augmentation (DeiT-III / timm RASampler)")
+    tr.add_argument("--repeat-aug-repeats", type=int, default=3,
+                    help="Number of repeats per sample when using repeated augmentation")
     tr.add_argument("--seed", type=int, default=42)
     tr.add_argument("--no-external", dest="mix_external", action="store_false", default=True)
     tr.add_argument("--primary-fraction", type=float, default=0.95)
@@ -254,6 +263,8 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--groups", type=int, default=64)
     tr.add_argument("--width-per-group", type=int, default=4)
     tr.add_argument("--drop-path-rate", type=float, default=0.1)
+    tr.add_argument("--deit-model", choices=["tiny", "small", "base", "large", "huge"], default="base",
+                    help="DeiT-III model size: tiny, small, base, large (304M), huge (632M, patch14)")
     tr.add_argument("--flash-attention", dest="use_flash_attention", action="store_true", default=False,
                     help="Use SDPA (Flash Attention when available) instead of manual attention")
     # Training
@@ -261,7 +272,8 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--warmup-epochs", type=int, default=20)
     tr.add_argument("--lr", type=float, default=1e-3)
     tr.add_argument("--weight-decay", type=float, default=0.05)
-    tr.add_argument("--eta-min", type=float, default=1e-8)
+    tr.add_argument("--eta-min", type=float, default=1e-5,
+                    help="Min LR for cosine scheduler (DeiT-III uses 1e-5)")
     tr.add_argument("--scheduler-t0", type=int, default=50)
     tr.add_argument("--scheduler-t-mult", type=int, default=2)
     tr.add_argument("--ema-decay", type=float, default=0.995)
@@ -273,6 +285,10 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--bce-loss", dest="bce_loss", action="store_true", default=False,
                     help="Use binary cross-entropy (DeiT-III style) instead of cross-entropy")
     tr.add_argument("--mixup-off-last-n", type=int, default=10)
+    tr.add_argument("--drop-path-increment", type=float, default=0.0,
+                    help="Add this much to stochastic depth every N epochs (0 = disabled)")
+    tr.add_argument("--drop-path-increment-every", type=int, default=0,
+                    help="Increment stochastic depth every this many epochs (0 = disabled)")
     tr.add_argument("--grad-clip-norm", type=float, default=1.0)
     tr.add_argument("--no-weight-decay-exclusion", dest="weight_decay_exclude", action="store_false", default=True,
                     help="Apply weight decay to all params (default: exclude LayerNorm, bias, LayerScale)")

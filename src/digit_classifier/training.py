@@ -35,8 +35,8 @@ from digit_classifier.external import DEFAULT_EXTERNAL_FRACTIONS
 from digit_classifier.loss import BCELossWithSmoothing
 from digit_classifier.mixup import MixupCutmixApply, create_mixup_cutmix
 from digit_classifier.model import ResNeXt
-from digit_classifier.vit import deit3_base_patch16_224
-from digit_classifier.sampler import RatioBatchSampler
+from digit_classifier.vit import build_deit3
+from digit_classifier.sampler import RatioBatchSampler, RepeatAugRatioBatchSampler, RepeatAugSampler
 from digit_classifier.splitting import split_dataset
 
 console = Console()
@@ -185,6 +185,12 @@ def _get_param_groups(
 # Warm-restart epoch computation
 # ---------------------------------------------------------------------------
 
+def _get_deit_model(model: nn.Module) -> nn.Module | None:
+    """Get the underlying DeiT3 from a possibly torch.compile-wrapped model."""
+    m = getattr(model, "_orig_mod", model)
+    return m if hasattr(m, "set_drop_path_rate") else None
+
+
 def compute_warm_restart_epochs(
     warmup_epochs: int,
     t0: int,
@@ -309,6 +315,8 @@ def _create_dataloaders(
     batch_size: int,
     primary_fraction: float,
     device: torch.device,
+    repeat_aug: bool = False,
+    repeat_aug_repeats: int = 3,
 ) -> tuple[DataLoader, DataLoader]:
     num_workers = min(8, max(1, cpu_count() - 1))
     pin_memory = device.type == "cuda"
@@ -323,19 +331,45 @@ def _create_dataloaders(
     )
 
     original_count = getattr(train_dataset, "num_original", None)
-    if original_count is not None:
-        sampler = RatioBatchSampler(
+    has_external = original_count is not None and original_count < len(train_dataset)
+
+    if repeat_aug and has_external:
+        batch_sampler = RepeatAugRatioBatchSampler(
             original_count=int(original_count),
             total_count=len(train_dataset),
             batch_size=batch_size,
             primary_fraction=primary_fraction,
+            num_repeats=repeat_aug_repeats,
             drop_last=True,
         )
-        train_loader = DataLoader(train_dataset, batch_sampler=sampler, **common)
-    else:
-        train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, **common,
+        train_loader = DataLoader(train_dataset, batch_sampler=batch_sampler, **common)
+    elif repeat_aug:
+        sampler = RepeatAugSampler(
+            train_dataset,
+            shuffle=True,
+            num_repeats=repeat_aug_repeats,
         )
+        train_loader = DataLoader(
+            train_dataset,
+            sampler=sampler,
+            batch_size=batch_size,
+            drop_last=True,
+            **common,
+        )
+    else:
+        if original_count is not None:
+            sampler = RatioBatchSampler(
+                original_count=int(original_count),
+                total_count=len(train_dataset),
+                batch_size=batch_size,
+                primary_fraction=primary_fraction,
+                drop_last=True,
+            )
+            train_loader = DataLoader(train_dataset, batch_sampler=sampler, **common)
+        else:
+            train_loader = DataLoader(
+                train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, **common,
+            )
 
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **common)
     return train_loader, val_loader
@@ -434,6 +468,8 @@ def train(cfg: Config) -> None:
     train_loader, val_loader = _create_dataloaders(
         train_dataset, val_dataset, cfg.data.batch_size,
         cfg.data.primary_fraction, device,
+        repeat_aug=cfg.data.repeat_aug,
+        repeat_aug_repeats=cfg.data.repeat_aug_repeats,
     )
 
     # --- Mixup / CutMix ---
@@ -460,8 +496,9 @@ def train(cfg: Config) -> None:
     ).to(device)
     """
 
-    model_name = "deit3_base_patch16_224"
-    model = deit3_base_patch16_224(
+    model_name = f"deit3_{cfg.model.deit_model}_patch16_224"
+    model = build_deit3(
+        size=cfg.model.deit_model,
         num_classes=cfg.model.num_classes,
         drop_path_rate=cfg.model.drop_path_rate,
         image_size=cfg.data.image_size,
@@ -547,6 +584,20 @@ def train(cfg: Config) -> None:
     best_val_accuracy = 0.0
 
     for epoch in range(tc.epochs):
+        # Repeated augmentation: set epoch for reproducible shuffle
+        loader_sampler = getattr(train_loader, "sampler", None) or getattr(
+            train_loader, "batch_sampler", None
+        )
+        if loader_sampler is not None and hasattr(loader_sampler, "set_epoch"):
+            loader_sampler.set_epoch(epoch)
+
+        # Scheduled stochastic depth increase
+        deit = _get_deit_model(model)
+        if deit is not None and tc.drop_path_increment > 0 and tc.drop_path_increment_every > 0:
+            step = epoch // tc.drop_path_increment_every
+            effective_max = cfg.model.drop_path_rate + step * tc.drop_path_increment
+            deit.set_drop_path_rate(effective_max)
+
         # Disable mixup for the final N epochs.
         active_mixup = mixup if epoch < tc.epochs - tc.mixup_off_last_n else None
         if epoch == tc.epochs - tc.mixup_off_last_n:

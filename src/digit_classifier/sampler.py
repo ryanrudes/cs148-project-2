@@ -1,16 +1,18 @@
-"""Custom batch sampler for controlling original / external mixing ratio.
+"""Custom samplers for training.
 
-The :class:`RatioBatchSampler` composes each batch so that approximately
-``primary_fraction`` of the indices come from the first ``original_count``
-items (the "original" training images) and the remainder come from the
-external pool.  The external pool is cycled so that the *entire* external
-dataset is seen across training.
+- :class:`RatioBatchSampler`: Controls original / external mixing ratio per batch.
+- :class:`RepeatAugSampler`: Repeated augmentation (DeiT-III / timm style).
+- :class:`RepeatAugRatioBatchSampler`: Combines repeated augmentation with ratio control.
 """
 
 from __future__ import annotations
 
+import math
 import random
 from typing import Iterator
+
+import torch
+from torch.utils.data import Sampler
 
 
 class RatioBatchSampler:
@@ -114,3 +116,193 @@ class RatioBatchSampler:
         if self.drop_last:
             return self.total_count // self.batch_size
         return -(-self.total_count // self.batch_size)
+
+
+class RepeatAugSampler(Sampler[int]):
+    """Repeated augmentation sampler (DeiT-III / timm RASampler style).
+
+    Repeats each sample index ``num_repeats`` times so that different augmented
+    versions of the same image are seen in different batches. Supports both
+    single-GPU (num_replicas=1, rank=0) and distributed training.
+
+    Based on https://github.com/facebookresearch/deit/blob/main/samplers.py
+    and timm's RepeatAugSampler.
+    """
+
+    def __init__(
+        self,
+        dataset: object,
+        num_replicas: int | None = None,
+        rank: int | None = None,
+        shuffle: bool = True,
+        num_repeats: int = 3,
+        selected_round: int = 0,
+        selected_ratio: float = 0.0,
+    ) -> None:
+        if num_replicas is None or rank is None:
+            try:
+                import torch.distributed as dist
+                if dist.is_available() and dist.is_initialized():
+                    num_replicas = num_replicas or dist.get_world_size()
+                    rank = rank if rank is not None else dist.get_rank()
+                else:
+                    num_replicas = num_replicas or 1
+                    rank = rank if rank is not None else 0
+            except Exception:
+                num_replicas = num_replicas or 1
+                rank = rank if rank is not None else 0
+
+        self.dataset = dataset
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.shuffle = shuffle
+        self.num_repeats = num_repeats
+        self.epoch = 0
+        self.num_samples = int(math.ceil(len(dataset) * num_repeats / num_replicas))
+        self.total_size = self.num_samples * num_replicas
+
+        selected_ratio = selected_ratio or num_replicas
+        if selected_round:
+            self.num_selected_samples = int(
+                math.floor(len(dataset) // selected_round * selected_round / selected_ratio)
+            )
+        else:
+            # Use full repeated set when no rounding (single-GPU / small datasets)
+            self.num_selected_samples = self.num_samples
+
+    def __iter__(self) -> Iterator[int]:
+        g = torch.Generator()
+        g.manual_seed(self.epoch)
+        if self.shuffle:
+            indices = torch.randperm(len(self.dataset), generator=g)
+        else:
+            indices = torch.arange(len(self.dataset))
+
+        indices = torch.repeat_interleave(indices, repeats=int(self.num_repeats), dim=0)
+        indices = indices.tolist()
+
+        padding_size = self.total_size - len(indices)
+        if padding_size > 0:
+            indices += indices[:padding_size]
+
+        indices = indices[self.rank : self.total_size : self.num_replicas]
+        return iter(indices[: self.num_selected_samples])
+
+    def __len__(self) -> int:
+        return self.num_selected_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+
+class RepeatAugRatioBatchSampler:
+    """Combines repeated augmentation with RatioBatchSampler's primary/external ratio.
+
+    Repeats each sample index ``num_repeats`` times (for different augmentations),
+    then forms batches with ``primary_fraction`` from the original pool and the
+    remainder from the external pool. Use when both repeat_aug and external data
+    are enabled.
+    """
+
+    def __init__(
+        self,
+        original_count: int,
+        total_count: int,
+        batch_size: int,
+        primary_fraction: float = 0.95,
+        num_repeats: int = 3,
+        drop_last: bool = True,
+        seed: int | None = None,
+    ) -> None:
+        self.original_count = int(original_count)
+        self.external_count = int(total_count - original_count)
+        self.total_count = int(total_count)
+        self.batch_size = int(batch_size)
+        self.primary_fraction = float(primary_fraction)
+        self.k_primary = max(1, int(round(self.batch_size * self.primary_fraction)))
+        self.k_secondary = self.batch_size - self.k_primary
+        self.num_repeats = int(num_repeats)
+        self.drop_last = bool(drop_last)
+        self.seed = seed
+        self.epoch = 0
+
+    def __iter__(self) -> Iterator[list[int]]:
+        g = torch.Generator()
+        g.manual_seed((self.seed or 0) + self.epoch * 1000)
+
+        orig_idx = torch.arange(self.original_count)
+        orig_idx = torch.repeat_interleave(orig_idx, repeats=self.num_repeats, dim=0)
+        orig_idx = orig_idx[torch.randperm(len(orig_idx), generator=g)].tolist()
+
+        ext_idx = torch.arange(self.original_count, self.original_count + self.external_count)
+        ext_idx = torch.repeat_interleave(ext_idx, repeats=self.num_repeats, dim=0)
+        ext_idx = ext_idx[torch.randperm(len(ext_idx), generator=g)].tolist()
+
+        p_orig = 0
+        p_ext = 0
+
+        while True:
+            if p_orig + self.k_primary > len(orig_idx):
+                if self.drop_last:
+                    break
+                g.manual_seed((self.seed or 0) + self.epoch * 1000 + 1)
+                orig_idx = torch.arange(self.original_count).repeat_interleave(self.num_repeats)
+                orig_idx = orig_idx[torch.randperm(len(orig_idx), generator=g)].tolist()
+                p_orig = 0
+
+            primary_block = orig_idx[p_orig : p_orig + self.k_primary]
+            p_orig += self.k_primary
+
+            secondary_block: list[int] = []
+            if self.k_secondary > 0:
+                if self.external_count == 0:
+                    extra_needed = self.k_secondary
+                    if p_orig + extra_needed > len(orig_idx):
+                        if self.drop_last:
+                            break
+                        g.manual_seed((self.seed or 0) + self.epoch * 1000 + 2)
+                        orig_idx = torch.arange(self.original_count).repeat_interleave(self.num_repeats)
+                        orig_idx = orig_idx[torch.randperm(len(orig_idx), generator=g)].tolist()
+                        p_orig = 0
+                    secondary_block = orig_idx[p_orig : p_orig + extra_needed]
+                    p_orig += extra_needed
+                else:
+                    if p_ext + self.k_secondary > len(ext_idx):
+                        remaining = len(ext_idx) - p_ext
+                        secondary_block.extend(ext_idx[p_ext:])
+                        g.manual_seed((self.seed or 0) + self.epoch * 1000 + 3)
+                        ext_idx = torch.arange(
+                            self.original_count,
+                            self.original_count + self.external_count,
+                        ).repeat_interleave(self.num_repeats)
+                        ext_idx = ext_idx[torch.randperm(len(ext_idx), generator=g)].tolist()
+                        p_ext = 0
+                        need = self.k_secondary - remaining
+                        secondary_block.extend(ext_idx[p_ext : p_ext + need])
+                        p_ext += need
+                    else:
+                        secondary_block = ext_idx[p_ext : p_ext + self.k_secondary]
+                        p_ext += self.k_secondary
+
+            batch = primary_block + secondary_block
+            if len(batch) != self.batch_size:
+                if self.drop_last:
+                    break
+                while len(batch) < self.batch_size:
+                    batch.append(orig_idx[p_orig % len(orig_idx)])
+                    p_orig += 1
+
+            yield batch
+
+    def __len__(self) -> int:
+        orig_len = self.original_count * self.num_repeats
+        ext_len = self.external_count * self.num_repeats
+        if self.drop_last:
+            if self.external_count == 0:
+                return orig_len // self.batch_size
+            return min(orig_len // self.k_primary, ext_len // self.k_secondary)
+        total = orig_len + ext_len
+        return -(-total // self.batch_size)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch

@@ -274,9 +274,30 @@ class DeiT3(nn.Module):
         feat = self.forward_features(x)
         return self.head(feat)
 
+    def set_drop_path_rate(self, max_rate: float) -> None:
+        """Update stochastic depth rates for all blocks (linspace from 0 to max_rate)."""
+        max_rate = min(max(0.0, max_rate), 1.0)
+        dpr = torch.linspace(0, max_rate, self.config.depth).tolist()
+        for i, blk in enumerate(self.blocks):
+            rate = dpr[i]
+            for dp in (blk.drop_path1, blk.drop_path2):
+                if isinstance(dp, DropPath):
+                    dp.drop_prob = float(rate)
+
 
 # Convenience builders matching common DeiT-III sizes
 
+DEIT_BUILDERS: dict[str, type] = {}
+
+
+def _register_builder(name: str):
+    def decorator(fn):
+        DEIT_BUILDERS[name] = fn
+        return fn
+    return decorator
+
+
+@_register_builder("tiny")
 def deit3_tiny_patch16_224(
     num_classes: int = 10,
     drop_path_rate: float | None = None,
@@ -293,6 +314,7 @@ def deit3_tiny_patch16_224(
     return DeiT3(cfg)
 
 
+@_register_builder("small")
 def deit3_small_patch16_224(
     num_classes: int = 10,
     drop_path_rate: float | None = None,
@@ -309,6 +331,7 @@ def deit3_small_patch16_224(
     return DeiT3(cfg)
 
 
+@_register_builder("base")
 def deit3_base_patch16_224(
     num_classes: int = 10,
     drop_path_rate: float | None = None,
@@ -323,3 +346,58 @@ def deit3_base_patch16_224(
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
     return DeiT3(cfg)
+
+
+@_register_builder("large")
+def deit3_large_patch16_224(
+    num_classes: int = 10,
+    drop_path_rate: float | None = None,
+    image_size: int = 224,
+    use_flash_attention: bool = False,
+) -> DeiT3:
+    """DeiT-III large: 1024-dim, 24 layers, 16 heads (DeiT-III paper)."""
+    cfg = DeiTConfig(
+        hidden_size=1024, depth=24, num_heads=16, num_classes=num_classes,
+        image_size=image_size,
+        use_flash_attention=use_flash_attention,
+    )
+    if drop_path_rate is not None:
+        cfg.drop_path_rate = drop_path_rate
+    return DeiT3(cfg)
+
+
+@_register_builder("huge")
+def deit3_huge_patch14_224(
+    num_classes: int = 10,
+    drop_path_rate: float | None = None,
+    image_size: int = 224,
+    use_flash_attention: bool = False,
+) -> DeiT3:
+    """DeiT-III huge: 1280-dim, 32 layers, 16 heads, patch14 (DeiT-III paper)."""
+    cfg = DeiTConfig(
+        hidden_size=1280, depth=32, num_heads=16, num_classes=num_classes,
+        image_size=image_size,
+        patch_size=14,
+        use_flash_attention=use_flash_attention,
+    )
+    if drop_path_rate is not None:
+        cfg.drop_path_rate = drop_path_rate
+    return DeiT3(cfg)
+
+
+def build_deit3(
+    size: str,
+    num_classes: int = 10,
+    drop_path_rate: float | None = None,
+    image_size: int = 224,
+    use_flash_attention: bool = False,
+) -> DeiT3:
+    """Build a DeiT-III model by size name (tiny, small, base, large, huge)."""
+    if size not in DEIT_BUILDERS:
+        raise ValueError(f"Unknown deit_model '{size}'. Choose from: {list(DEIT_BUILDERS)}")
+    return DEIT_BUILDERS[size](
+        num_classes=num_classes,
+        drop_path_rate=drop_path_rate,
+        image_size=image_size,
+        use_flash_attention=use_flash_attention,
+    )

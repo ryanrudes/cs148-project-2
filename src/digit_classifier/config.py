@@ -19,6 +19,8 @@ class DataConfig:
     color: bool = True
     train_fraction: float = 0.9
     batch_size: int = 128
+    repeat_aug: bool = False
+    repeat_aug_repeats: int = 3
     split_seed: int = 42
     mix_external: bool = True
     primary_fraction: float = 0.95
@@ -37,6 +39,7 @@ class ModelConfig:
     width_per_group: int = 4
     drop_path_rate: float = 0.1
     use_flash_attention: bool = False
+    deit_model: str = "base"
 
 
 @dataclass
@@ -65,7 +68,7 @@ class TrainingConfig:
     warmup_epochs: int = 20
     lr: float = 1e-3
     weight_decay: float = 0.05
-    eta_min: float = 1e-8
+    eta_min: float = 1e-5  # DeiT-III / timm default (min_lr)
     scheduler_t0: int = 50
     scheduler_t_mult: int = 2
     ema_decay: float = 0.995
@@ -80,6 +83,8 @@ class TrainingConfig:
     label_smoothing: float = 0.1
     bce_loss: bool = False
     mixup_off_last_n: int = 10
+    drop_path_increment: float = 0.0  # add this much to stochastic depth every N epochs (0 = disabled)
+    drop_path_increment_every: int = 0  # increment interval in epochs (0 = disabled)
     grad_clip_norm: float = 1.0
     weight_decay_exclude: bool = True
     layer_decay: float = 0.0
