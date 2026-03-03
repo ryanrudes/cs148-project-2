@@ -62,6 +62,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             drop_path_rate=args.drop_path_rate,
             use_flash_attention=args.use_flash_attention,
             deit_model=args.deit_model,
+            layer_scale_init=args.layer_scale_init,
         ),
         augment=AugmentConfig(),
         training=TrainingConfig(
@@ -267,6 +268,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="DeiT-III model size: tiny, small, base, large (304M), huge (632M, patch14)")
     tr.add_argument("--flash-attention", dest="use_flash_attention", action="store_true", default=False,
                     help="Use SDPA (Flash Attention when available) instead of manual attention")
+    tr.add_argument("--layer-scale-init", type=float, default=1e-4,
+                    help="LayerScale initialization value (DeiT-III uses 1e-4)")
     # Training
     tr.add_argument("--epochs", type=int, default=900)
     tr.add_argument("--warmup-epochs", type=int, default=20)

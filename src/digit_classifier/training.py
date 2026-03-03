@@ -503,6 +503,7 @@ def train(cfg: Config) -> None:
         drop_path_rate=cfg.model.drop_path_rate,
         image_size=cfg.data.image_size,
         use_flash_attention=cfg.model.use_flash_attention,
+        init_values=cfg.model.layer_scale_init,
     ).to(device)
 
     param_groups = _get_param_groups(

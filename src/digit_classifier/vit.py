@@ -303,6 +303,7 @@ def deit3_tiny_patch16_224(
     drop_path_rate: float | None = None,
     image_size: int = 224,
     use_flash_attention: bool = False,
+    init_values: float | None = None,
 ) -> DeiT3:
     cfg = DeiTConfig(
         hidden_size=192, depth=12, num_heads=3, num_classes=num_classes,
@@ -311,6 +312,8 @@ def deit3_tiny_patch16_224(
     )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
+    if init_values is not None:
+        cfg.init_values = init_values
     return DeiT3(cfg)
 
 
@@ -320,6 +323,7 @@ def deit3_small_patch16_224(
     drop_path_rate: float | None = None,
     image_size: int = 224,
     use_flash_attention: bool = False,
+    init_values: float | None = None,
 ) -> DeiT3:
     cfg = DeiTConfig(
         hidden_size=384, depth=12, num_heads=6, num_classes=num_classes,
@@ -328,6 +332,8 @@ def deit3_small_patch16_224(
     )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
+    if init_values is not None:
+        cfg.init_values = init_values
     return DeiT3(cfg)
 
 
@@ -337,6 +343,7 @@ def deit3_base_patch16_224(
     drop_path_rate: float | None = None,
     image_size: int = 224,
     use_flash_attention: bool = False,
+    init_values: float | None = None,
 ) -> DeiT3:
     cfg = DeiTConfig(
         hidden_size=768, depth=12, num_heads=12, num_classes=num_classes,
@@ -345,6 +352,8 @@ def deit3_base_patch16_224(
     )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
+    if init_values is not None:
+        cfg.init_values = init_values
     return DeiT3(cfg)
 
 
@@ -354,6 +363,7 @@ def deit3_large_patch16_224(
     drop_path_rate: float | None = None,
     image_size: int = 224,
     use_flash_attention: bool = False,
+    init_values: float | None = None,
 ) -> DeiT3:
     """DeiT-III large: 1024-dim, 24 layers, 16 heads (DeiT-III paper)."""
     cfg = DeiTConfig(
@@ -363,6 +373,8 @@ def deit3_large_patch16_224(
     )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
+    if init_values is not None:
+        cfg.init_values = init_values
     return DeiT3(cfg)
 
 
@@ -372,6 +384,7 @@ def deit3_huge_patch14_224(
     drop_path_rate: float | None = None,
     image_size: int = 224,
     use_flash_attention: bool = False,
+    init_values: float | None = None,
 ) -> DeiT3:
     """DeiT-III huge: 1280-dim, 32 layers, 16 heads, patch14 (DeiT-III paper)."""
     cfg = DeiTConfig(
@@ -382,6 +395,8 @@ def deit3_huge_patch14_224(
     )
     if drop_path_rate is not None:
         cfg.drop_path_rate = drop_path_rate
+    if init_values is not None:
+        cfg.init_values = init_values
     return DeiT3(cfg)
 
 
@@ -391,6 +406,7 @@ def build_deit3(
     drop_path_rate: float | None = None,
     image_size: int = 224,
     use_flash_attention: bool = False,
+    init_values: float | None = None,
 ) -> DeiT3:
     """Build a DeiT-III model by size name (tiny, small, base, large, huge)."""
     if size not in DEIT_BUILDERS:
@@ -400,4 +416,5 @@ def build_deit3(
         drop_path_rate=drop_path_rate,
         image_size=image_size,
         use_flash_attention=use_flash_attention,
+        init_values=init_values,
     )

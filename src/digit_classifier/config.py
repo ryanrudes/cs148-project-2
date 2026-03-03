@@ -40,6 +40,7 @@ class ModelConfig:
     drop_path_rate: float = 0.1
     use_flash_attention: bool = False
     deit_model: str = "base"
+    layer_scale_init: float = 1e-4  # LayerScale init (DeiT-III uses 1e-4)
 
 
 @dataclass
