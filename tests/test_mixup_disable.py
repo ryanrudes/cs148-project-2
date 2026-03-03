@@ -30,12 +30,12 @@ def test_mixup_active_uses_soft_target_loss():
         num_classes=10, mixup_alpha=0.2, cutmix_alpha=1.0,
         prob=0.5, label_smoothing=0.0, mode="elem",
     ))
-    crit = select_train_criterion(mixup_fn)
+    crit = select_train_criterion(mixup_fn, num_classes=10, bce_loss=False, label_smoothing=0.0)
     assert isinstance(crit, SoftTargetCrossEntropy)
 
 
 def test_mixup_disabled_uses_ce_loss():
-    crit = select_train_criterion(None)
+    crit = select_train_criterion(None, num_classes=10, bce_loss=False, label_smoothing=0.0)
     assert isinstance(crit, nn.CrossEntropyLoss)
 
 
@@ -53,9 +53,9 @@ def test_train_epoch_runs_with_both_modes():
     ))
 
     # With mixup
-    crit = select_train_criterion(mixup_fn)
+    crit = select_train_criterion(mixup_fn, num_classes=10, bce_loss=False, label_smoothing=0.0)
     train_epoch(model, loader, crit, optimizer, {}, scaler, device, mixup_fn=mixup_fn)
 
     # Without mixup
-    crit2 = select_train_criterion(None)
+    crit2 = select_train_criterion(None, num_classes=10, bce_loss=False, label_smoothing=0.0)
     train_epoch(model, loader, crit2, optimizer, {}, scaler, device, mixup_fn=None)

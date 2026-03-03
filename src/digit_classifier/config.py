@@ -78,6 +78,7 @@ class TrainingConfig:
     mixup_prob: float = 0.5
     mixup_mode: str = "elem"
     label_smoothing: float = 0.1
+    bce_loss: bool = False
     mixup_off_last_n: int = 10
     grad_clip_norm: float = 1.0
     weight_decay_exclude: bool = True

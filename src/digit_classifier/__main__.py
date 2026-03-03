@@ -77,6 +77,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             mixup_prob=args.mixup_prob,
             mixup_mode=args.mixup_mode,
             label_smoothing=args.label_smoothing,
+            bce_loss=args.bce_loss,
             mixup_off_last_n=args.mixup_off_last_n,
             grad_clip_norm=args.grad_clip_norm,
             weight_decay_exclude=args.weight_decay_exclude,
@@ -269,6 +270,8 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--mixup-prob", type=float, default=0.5)
     tr.add_argument("--mixup-mode", default="elem")
     tr.add_argument("--label-smoothing", type=float, default=0.1)
+    tr.add_argument("--bce-loss", dest="bce_loss", action="store_true", default=False,
+                    help="Use binary cross-entropy (DeiT-III style) instead of cross-entropy")
     tr.add_argument("--mixup-off-last-n", type=int, default=10)
     tr.add_argument("--grad-clip-norm", type=float, default=1.0)
     tr.add_argument("--no-weight-decay-exclusion", dest="weight_decay_exclude", action="store_false", default=True,

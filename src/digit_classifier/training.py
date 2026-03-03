@@ -32,6 +32,7 @@ from torchmetrics import Accuracy, F1Score, Metric
 
 from digit_classifier.config import Config
 from digit_classifier.external import DEFAULT_EXTERNAL_FRACTIONS
+from digit_classifier.loss import BCELossWithSmoothing
 from digit_classifier.mixup import MixupCutmixApply, create_mixup_cutmix
 from digit_classifier.model import ResNeXt
 from digit_classifier.vit import deit3_base_patch16_224
@@ -94,12 +95,19 @@ def _compute_and_reset(metrics: dict[str, Metric]) -> dict[str, float]:
 # Loss selection
 # ---------------------------------------------------------------------------
 
-def select_train_criterion(active_mixup: MixupCutmixApply | None) -> nn.Module:
-    """Return the appropriate loss for the current mixup state.
+def select_train_criterion(
+    active_mixup: MixupCutmixApply | None,
+    num_classes: int,
+    bce_loss: bool = False,
+    label_smoothing: float = 0.1,
+) -> nn.Module:
+    """Return the appropriate loss for the current mixup state and config.
 
-    When mixup produces soft targets we need ``SoftTargetCrossEntropy``;
-    when mixup is off, plain ``CrossEntropyLoss`` with integer labels.
+    When bce_loss is True (DeiT-III style): use BCEWithLogitsLoss with smoothing.
+    Otherwise: SoftTargetCrossEntropy when mixup is active, CrossEntropyLoss when off.
     """
+    if bce_loss:
+        return BCELossWithSmoothing(num_classes=num_classes, smoothing=label_smoothing)
     if active_mixup is not None:
         return SoftTargetCrossEntropy()
     return nn.CrossEntropyLoss()
@@ -504,7 +512,13 @@ def train(cfg: Config) -> None:
 
     # --- Metrics ---
     metrics = _build_metrics(cfg.model.num_classes, device)
-    val_criterion = nn.CrossEntropyLoss()
+    if tc.bce_loss:
+        val_criterion = BCELossWithSmoothing(
+            num_classes=cfg.model.num_classes,
+            smoothing=tc.label_smoothing,
+        )
+    else:
+        val_criterion = nn.CrossEntropyLoss()
     scaler = GradScaler(enabled=(device.type == "cuda" and tc.amp_enabled))
 
     # --- Wandb ---
@@ -538,7 +552,12 @@ def train(cfg: Config) -> None:
         if epoch == tc.epochs - tc.mixup_off_last_n:
             console.print(f"[yellow]Disabling mixup for final {tc.mixup_off_last_n} epochs[/yellow]")
 
-        train_criterion = select_train_criterion(active_mixup)
+        train_criterion = select_train_criterion(
+            active_mixup,
+            num_classes=cfg.model.num_classes,
+            bce_loss=tc.bce_loss,
+            label_smoothing=tc.label_smoothing,
+        )
 
         train_metrics = train_epoch(
             model, train_loader, train_criterion, optimizer, metrics, scaler,
