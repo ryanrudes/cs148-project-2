@@ -1067,7 +1067,7 @@ desaturated
 high contrast
 pastel wash
 tungsten balance
-sickly green fluorescent
+neutral fluorescent office
 vintage or faded
 cinematic teal-orange
 natural
@@ -1613,7 +1613,7 @@ sublimated
 early 2000s digital
 Soviet-era industrial
 Bauhaus or minimalist
-surrealist or dreamlike
+documentary or reportage
 noir or high contrast
 kodachrome nostalgia
 cold war sci-fi

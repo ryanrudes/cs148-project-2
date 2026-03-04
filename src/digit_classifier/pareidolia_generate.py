@@ -159,7 +159,15 @@ def get_digit_hint(digit: int) -> str:
     if not variations:
         return ""
     variation = random.choice(variations)
-    return f"The digit {digit} shape: {variation}. Use materials that form the appropriate strokes."
+    return f"The digit {digit} shape: {variation}."
+
+
+def sample_formation_type() -> str:
+    """Sample whether the digit should be formed by continuous strokes or discrete objects."""
+    return random.choice([
+        "continuous stroke or line (cable, wire, tape, rope, hose, liquid trail, paint ribbon, etc.)",
+        "discrete objects arranged in positions (pills, mugs, coins, candies, stones, books, fruit, toys, Lego bricks, tools, etc.)",
+    ])
 
 
 def _format_llm_prompt(digit: int) -> str:
@@ -169,17 +177,21 @@ def _format_llm_prompt(digit: int) -> str:
     return LLM_PROMPT_TEMPLATE.format(
         digit=digit,
         digit_hint=digit_hint_block,
+        formation_type=sample_formation_type(),
         variety_hint=sample_variety_hint(),
         uniqueness_avoid=sample_uniqueness_avoid(),
     )
 
 LLM_PROMPT_TEMPLATE = r"""
-You are an expert prompt-writer for AI image generators. Create ONE final image-generation prompt that will produce an image where the digit "{digit}" (0–9) is strongly implied by out-of-distribution, real-world objects or natural arrangements, but NOT shown as printed text, signage, typed numbers, digital overlays, or any explicit numeral glyph.
+You are an expert prompt-writer for AI image generators. Create ONE final image-generation prompt that will produce a PHOTOREALISTIC image where the digit "{digit}" (0–9) is strongly implied by real-world objects or natural arrangements, but NOT shown as printed text, signage, typed numbers, digital overlays, or any explicit numeral glyph.
+
+CRITICAL: The output must look like a real photograph—documentary, candid, or snapshot quality. NOT stylized, NOT surreal, NOT AI-art aesthetic. A viewer should believe it could have been taken by a real camera in the real world.
 
 Core concept:
-- The digit "{digit}" must emerge via pareidolia: objects in the scene happen to form the digit's silhouette or strokes.
-- Use surprising, uncommon materials and contexts (OOD): cables, vines, roots, leaves, driftwood, seaweed, foam, cracks, rust streaks, spilled liquids, snow tracks, tangled threads, condensation trails, shadows, insects, pebbles, fruit peels, folded fabric, etc.
-- The result should feel physically plausible for the chosen medium (photo, scan, film still, microscopic image, security cam frame, etc.).
+- The digit "{digit}" must emerge via pareidolia: objects in the scene happen to form the digit's shape.
+- For this image you MUST use: {formation_type}
+- Use varied materials and contexts appropriate to that formation type. Variety comes from setting and materials, not from surreal styling.
+- The result must be physically plausible and believable for the chosen capture medium.
 {digit_hint}
 
 Hard constraints (must follow):
@@ -188,28 +200,23 @@ Hard constraints (must follow):
 - The digit must be readable from the main viewpoint (clear gestalt). Avoid ambiguity.
 - The digit must be UPRIGHT as the viewer would see it (like on a clock or display). Explicitly specify "upright", "right-side up", or "oriented for normal reading" in the prompt. Do NOT use tilted, rotated, Dutch-angle, or overhead views that make the digit hard to read.
 - For digits 6 and 9, specify orientation clearly (e.g., "upright" or "upside-down") so the viewer knows which digit is intended.
-- Use at least one "attention anchor" (color/material/lighting) that makes the digit-forming elements stand out while keeping the rest believable.
-- Make sure sufficient specification is made in the prompt that the image generator will generate an image with the curvature of the actual digit, even without explicitly specifying the digit.
+- Use a plausible attention anchor: natural colors and materials (e.g., yellow caution tape, orange traffic cone, red cable, rust streak, bright fabric) that make the digit-forming elements stand out. AVOID neon, fluorescent, or artificially saturated colors.
+- Make sure sufficient specification is made in the prompt that the image generator will produce the correct digit shape, even without explicitly naming the digit.
 
 Variety requirements (critical):
 - You MUST use this exact combination of attributes for your image. Build the entire scene around ALL of these (do not omit any):
 {variety_hint}
 - For this image: {uniqueness_avoid}.
-- AVOID these overused pareidolia aesthetics: underground, endoscope, pipeline, tunnel, sewer, drain, circular vignette, black circular frame, dark circular cutout, perfectly centered subject, center-weighted composition, "ring-LED" or "ring flash" in a dark void. Discard your first 3–5 ideas—they are likely generic. Push for a concept that would surprise you.
-- AVOID: vines/roots on walls, cracks in pavement, spilled liquids, abstract patterns, driftwood, seaweed, shadows on flat surfaces. Push for combinations that would surprise you.
-- The style must be described concretely and specifically using 6–10 distinct attributes, drawing from ANY of these (mix freely, be original):
-  - medium/pipeline (phone snapshot, medium format film, CCTV, dashcam, drone, endoscope, microscope, scan, photocopier, underwater housing, thermal/IR, satellite, medical imaging vibe, stop-motion frame, etc.)
-  - optics (focal length feel, distortion type, chromatic aberration, flare behavior, focus falloff, rolling shutter — avoid circular vignette or dark-frame aesthetics)
-  - lighting (overcast, sodium vapor streetlight, harsh noon sun, backlit, mixed fluorescent, candlelight, flash, lightning, moonlit, aquarium lighting)
-  - exposure/quality artifacts (motion blur direction, sensor noise pattern, dust, scratches, compression blocks, lens haze, bloom, halation, banding)
-  - color science (cool/warm cast, desaturated, high contrast, pastel wash, tungsten balance, sickly green fluorescents, etc.)
-  - composition (angle, framing, distance, foreground occlusion, leading lines, symmetry/asymmetry)
-- Your style choices must NOT be generic ("cinematic", "high quality", "professional"). Make them testable and visual.
+- AVOID overused pareidolia aesthetics: underground, endoscope, pipeline, tunnel, sewer, drain, circular vignette, black circular frame, dark void, ring-LED in darkness, perfectly centered subject in void.
+- AVOID: vines/roots on walls, cracks in pavement, spilled liquids, abstract patterns, driftwood, seaweed, shadows on flat surfaces.
+- Style: use 2–3 subtle, plausible capture attributes (e.g., "overcast daylight, slight lens softness at edges" or "dashcam, natural street lighting"). Real photos have imperfections but they are SUBTLE. Do NOT stack 6–10 exaggerated artifacts (no "sickly" color casts, no heavy chromatic aberration, no aggressive vignetting, no neon false-color).
+- Color and lighting: use natural, believable descriptions (overcast daylight, warm tungsten, cool shade, mixed fluorescent). NO "sickly", "aggressive", "neon", "glaring", or artificially saturated language.
+- Your style choices must be testable and visual, but grounded in real-world photography.
 
 Process you must follow internally:
-1) Brainstorm 4–6 candidate object-arrangements that could imply "{digit}" using very different materials/settings. Reject any that resemble common pareidolia tropes.
-2) Select the most visually compelling AND most out-of-distribution concept that still feels photographable/depictable.
-3) Pair it with a capture style that is maximally different from typical "nice" photos AND from common AI-image aesthetics (no default "cinematic", "dramatic lighting", "shallow DOF"). Be specific and unusual.
+1) Brainstorm 4–6 candidate concepts that could imply "{digit}" using the required formation type ({formation_type}). Use varied materials and settings.
+2) Select the most visually clear concept that would look believable as a real photograph.
+3) Pair it with a capture style that a real camera would produce—subtle, plausible, not stylized.
 
 Final prompt output requirements:
 - Output ONE image-generator prompt (one paragraph is fine) that includes:
@@ -217,21 +224,23 @@ Final prompt output requirements:
   - Explicit statement that the digit is upright/right-side-up for normal viewing
   - Environment/context details (surface, surrounding items, time/weather if relevant)
   - Camera/viewpoint and composition details (avoid tilted or rotated views that obscure the digit)
-  - Lighting details
-  - The unique capture pipeline + optics + artifact details (6–10 concrete attributes)
+  - Lighting details (natural, plausible)
+  - 2–3 subtle capture/optics attributes (not a long list of exaggerated artifacts)
   - Explicit negative constraints at the end: "no text, no numbers, no logos, no watermark, no UI overlay"
-- Keep it generator-friendly: concrete nouns, physical details, minimal abstraction. Optimize for text-to-image models (concrete, visual, no abstract concepts).
+- Add "photorealistic, documentary photograph, real-world lighting" or similar to reinforce believability.
+- Keep it generator-friendly: concrete nouns, physical details, minimal abstraction.
 - Return ONLY the final image-generator prompt text. No headings, no bullet points, no analysis.
 """.strip()
 
 # Suffix appended to the LLM-generated prompt before sending to the image model.
 _IMAGE_PROMPT_DIGIT_SUFFIX = (
     "\n\nCritical: The arrangement of objects must form the digit {digit} clearly and legibly. "
-    "No printed text, numbers, signage, or digital overlays."
+    "No printed text, numbers, signage, or digital overlays. "
+    "Photorealistic, documentary-style photograph with natural lighting and believable materials."
 )
 _IMAGE_PROMPT_DIGIT_4_EXTRA = (
-    " The digit 4 specifically needs: a vertical stroke on the right, a horizontal bar across the top, "
-    "and a diagonal from the upper-left meeting the vertical. Sharp, clean angles."
+    " The digit 4 specifically needs: a vertical element on the right, a horizontal element across the top, "
+    "and a diagonal from the upper-left meeting the vertical. Sharp, clean angles (whether strokes or discrete objects)."
 )
 
 
