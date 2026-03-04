@@ -7,6 +7,9 @@ Usage::
     python -m digit_classifier train [--epochs 900] [--lr 1e-3] ...
     python -m digit_classifier infer --checkpoint best.pt
     python -m digit_classifier export-pipeline --checkpoint checkpoints/<run_id>/best.pt --output pipeline-cnn.pt
+    python -m digit_classifier generate-pareidolia [--out dataset_out] [--per-digit 50] [--batch]
+    python -m digit_classifier push-test-dataset --repo user/pareidolia-test [--dataset-dir dataset_out]
+    python -m digit_classifier pull-test-dataset --repo user/pareidolia-test [--dataset-dir dataset_out]
     python -m digit_classifier visualize [--num-batches 2]
 """
 
@@ -53,6 +56,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             split_seed=args.seed,
             mix_external=args.mix_external,
             primary_fraction=args.primary_fraction,
+            test_dataset_path=args.test_dataset,
         ),
         model=ModelConfig(
             layers=tuple(args.layers),
@@ -204,6 +208,59 @@ def _handle_pull_cache(args: argparse.Namespace) -> None:
     pull_cache(repo_id=args.repo, cache_dir=args.cache_dir)
 
 
+def _handle_push_test_dataset(args: argparse.Namespace) -> None:
+    from digit_classifier.hub import push_test_dataset
+    push_test_dataset(
+        repo_id=args.repo,
+        dataset_dir=args.dataset_dir,
+        private=not args.public,
+    )
+
+
+def _handle_pull_test_dataset(args: argparse.Namespace) -> None:
+    from digit_classifier.hub import pull_test_dataset
+    pull_test_dataset(repo_id=args.repo, dataset_dir=args.dataset_dir)
+
+
+def _handle_generate_pareidolia(args: argparse.Namespace) -> None:
+    try:
+        from digit_classifier.pareidolia_generate import run, list_resolution_options
+    except ImportError as e:
+        raise SystemExit(
+            "Pareidolia generation requires optional dependencies. "
+            "Install with: pip install digit-classifier[pareidolia]\n"
+            f"Original error: {e}"
+        ) from e
+    if args.list_resolutions:
+        list_resolution_options()
+        return
+    run(
+        out=args.out,
+        digits=args.digits,
+        per_digit=args.per_digit,
+        provider=args.provider,
+        llm_provider=args.llm_provider,
+        llm_model=args.llm_model,
+        image_model=args.image_model,
+        size=args.size,
+        quality=args.quality,
+        output_format=args.format,
+        sleep=args.sleep,
+        seed=args.seed,
+        gemini_model=args.gemini_model,
+        gemini_imagen_model=args.gemini_imagen_model,
+        gemini_llm_model=args.gemini_llm_model,
+        use_batch=args.batch,
+        batch_poll_seconds=args.batch_poll_seconds,
+        skip_confirm=args.yes,
+        max_retries=args.max_retries,
+        thinking_budget=args.thinking_budget,
+        thinking_level=args.thinking_level,
+        image_size=args.image_size,
+        temperature=args.temperature,
+    )
+
+
 def _handle_visualize(args: argparse.Namespace) -> None:
     cfg = Config(
         data=DataConfig(dataset_name=args.dataset, image_size=args.size, color=args.color),
@@ -259,6 +316,8 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--seed", type=int, default=42)
     tr.add_argument("--no-external", dest="mix_external", action="store_false", default=True)
     tr.add_argument("--primary-fraction", type=float, default=0.95)
+    tr.add_argument("--test-dataset", type=str, default=None,
+                    help="Pareidolia output dir (e.g. dataset_out) for test evaluation; no augmentation")
     # Model
     tr.add_argument("--layers", type=int, nargs="+", default=[3, 4, 23, 3])
     tr.add_argument("--num-classes", type=int, default=10)
@@ -357,6 +416,71 @@ def _build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--repo", required=True, help="HuggingFace repo id (e.g. user/dataset-name)")
     pl.add_argument("--cache-dir", default="datasets", help="Local cache directory")
 
+    # --- push-test-dataset ---
+    pts = sub.add_parser("push-test-dataset", help="Push pareidolia test dataset to HuggingFace Hub")
+    pts.add_argument("--repo", required=True, help="HuggingFace repo id (e.g. user/pareidolia-test)")
+    pts.add_argument("--dataset-dir", default="dataset_out", help="Local pareidolia output directory")
+    pts.add_argument("--public", action="store_true", help="Make the repo public (default: private)")
+
+    # --- pull-test-dataset ---
+    pld = sub.add_parser("pull-test-dataset", help="Pull pareidolia test dataset from HuggingFace Hub")
+    pld.add_argument("--repo", required=True, help="HuggingFace repo id (e.g. user/pareidolia-test)")
+    pld.add_argument("--dataset-dir", default="dataset_out", help="Local directory to download into")
+
+    # --- generate-pareidolia ---
+    gp = sub.add_parser(
+        "generate-pareidolia",
+        help="Generate AI dataset where digits 0-9 are implied by OOD real-world objects (pareidolia)",
+    )
+    gp.add_argument("--out", type=str, default="dataset_out", help="Output directory")
+    gp.add_argument("--digits", type=str, default="0-9",
+                    help='Digits to generate, e.g. "0-9" or "2,7,9"')
+    gp.add_argument("--per-digit", type=int, default=50, help="Images per digit")
+    gp.add_argument("--provider", type=str, default="openai",
+                    choices=["openai", "gemini", "gemini-imagen"],
+                    help="Image provider: openai, gemini (native), gemini-imagen")
+    gp.add_argument("--llm-provider", type=str, default=None,
+                    choices=["openai", "gemini", "gemini-imagen"],
+                    help="LLM for prompts (default: same as --provider)")
+    gp.add_argument("--llm-model", type=str, default=None,
+                    help="LLM model for prompts (default: env LLM_MODEL or model per provider)")
+    gp.add_argument("--gemini-llm-model", type=str, default=None,
+                    help="Gemini LLM for prompts, e.g. gemini-3.1-flash-lite-preview (default: env GEMINI_LLM_MODEL)")
+    gp.add_argument("--image-model", type=str, default=None,
+                    help="OpenAI image model (default: env IMAGE_MODEL or gpt-image-1)")
+    gp.add_argument("--gemini-model", type=str, default=None,
+                    help="Gemini native image model, e.g. gemini-3.1-flash-image-preview (default: env GEMINI_IMAGE_MODEL)")
+    gp.add_argument("--gemini-imagen-model", type=str, default=None,
+                    help="Gemini Imagen model (default: env GEMINI_IMAGEN_MODEL)")
+    gp.add_argument("--size", type=str, default="1024x1024",
+                    help='OpenAI image size. Options: auto, 1024x1024, 1536x1024, 1024x1536')
+    gp.add_argument("--image-size", type=str, default=None,
+                    help='Gemini/Imagen resolution: 1K, 2K, 4K (default: 1K)')
+    gp.add_argument("--list-resolutions", action="store_true",
+                    help="Print available resolution options and exit")
+    gp.add_argument("--quality", type=str, default="auto",
+                    help='OpenAI GPT image: "auto", "high", "medium", "low"')
+    gp.add_argument("--format", type=str, default="png", choices=["png", "jpeg", "webp"])
+    gp.add_argument("--sleep", type=float, default=0.2,
+                    help="Seconds to sleep between samples (sync mode). Use 2+ for Gemini free tier.")
+    gp.add_argument("--max-retries", type=int, default=5,
+                    help="Max retries on 429 rate limit (Gemini sync mode; default: 5)")
+    gp.add_argument("--thinking-budget", type=int, default=None,
+                    help="Gemini thinking budget in tokens (2.5 models). 0=off, -1=dynamic. E.g. 1024, 8192.")
+    gp.add_argument("--thinking-level", type=str, default=None,
+                    choices=["low", "high"],
+                    help="Gemini thinking level (3.x models): low or high")
+    gp.add_argument("--temperature", type=float, default=None,
+                    help="LLM temperature for prompt generation (0–2). Higher = more variety. Try 0.9–1.0 for creative prompts.")
+    gp.add_argument("--seed", type=int, default=None,
+                    help="Optional RNG seed for repeatable digit ordering")
+    gp.add_argument("--batch", action="store_true",
+                    help="Use Batch API (OpenAI or Gemini; 50%% cost reduction, ~24h window)")
+    gp.add_argument("--batch-poll-seconds", type=float, default=10.0,
+                    help="Seconds between batch status polls (default: 10)")
+    gp.add_argument("--yes", "-y", action="store_true",
+                    help="Skip cost confirmation prompt")
+
     # --- visualize ---
     viz = sub.add_parser("visualize", help="Visualise augmented training batches")
     viz.add_argument("--dataset", default="mnist_rgb_224")
@@ -391,6 +515,9 @@ def main() -> None:
         "export-pipeline": _handle_export_pipeline,
         "push-cache": _handle_push_cache,
         "pull-cache": _handle_pull_cache,
+        "push-test-dataset": _handle_push_test_dataset,
+        "pull-test-dataset": _handle_pull_test_dataset,
+        "generate-pareidolia": _handle_generate_pareidolia,
         "visualize": _handle_visualize,
     }
     handlers[args.command](args)

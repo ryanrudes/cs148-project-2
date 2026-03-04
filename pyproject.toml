@@ -27,6 +27,12 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+pareidolia = [
+    "openai>=1.0",
+    "pillow>=10.0",
+    "tqdm>=4.0",
+    "google-genai>=1.0",
+]
 
 [project.scripts]
 digit-classifier = "digit_classifier.__main__:main"

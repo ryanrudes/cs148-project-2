@@ -10,6 +10,11 @@ What gets pushed:
 
 External datasets (SVHN, MNIST, etc.) are **not** pushed — they download
 automatically from torchvision on first access on the cloud machine.
+
+Test dataset (pareidolia):
+- ``push_test_dataset`` / ``pull_test_dataset`` — push/pull the generate-pareidolia
+  output (metadata.jsonl + images/) to a HuggingFace dataset repo for use with
+  ``--test-dataset`` during training.
 """
 
 from __future__ import annotations
@@ -77,3 +82,75 @@ def pull_cache(
     npz_count = len(list(cache_path.glob("*.npz")))
     json_count = len(list(cache_path.glob("*.json")))
     console.print(f"[bold green]Pulled {npz_count} .npz + {json_count} .json file(s) to {cache_dir}[/bold green]")
+
+
+# ---------------------------------------------------------------------------
+# Test dataset (pareidolia)
+# ---------------------------------------------------------------------------
+
+def push_test_dataset(
+    repo_id: str,
+    dataset_dir: str = "dataset_out",
+    private: bool = True,
+) -> None:
+    """Upload the pareidolia test dataset to a HuggingFace Hub dataset repo.
+
+    Pushes metadata.jsonl and images/ (all PNGs under images/{digit}/).
+    Use with ``--test-dataset`` during training after pulling.
+    """
+    dataset_path = Path(dataset_dir)
+    metadata_path = dataset_path / "metadata.jsonl"
+    images_dir = dataset_path / "images"
+
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"Pareidolia metadata not found: {metadata_path}\n"
+            "Run generate-pareidolia first, or specify the correct --dataset-dir."
+        )
+    if not images_dir.is_dir():
+        raise FileNotFoundError(
+            f"Pareidolia images directory not found: {images_dir}\n"
+            "Run generate-pareidolia first, or specify the correct --dataset-dir."
+        )
+
+    api = HfApi()
+    api.create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
+    console.print(f"[bold]Pushing test dataset to:[/bold] [cyan]https://huggingface.co/datasets/{repo_id}[/cyan]")
+
+    api.upload_folder(
+        folder_path=str(dataset_path),
+        repo_id=repo_id,
+        repo_type="dataset",
+    )
+
+    img_count = sum(1 for _ in images_dir.rglob("*.png"))
+    console.print(f"[bold green]Pushed metadata.jsonl + {img_count} image(s) to {repo_id}[/bold green]")
+
+
+def pull_test_dataset(
+    repo_id: str,
+    dataset_dir: str = "dataset_out",
+) -> None:
+    """Download the pareidolia test dataset from a HuggingFace Hub dataset repo.
+
+    Downloads into *dataset_dir* (metadata.jsonl + images/). Use this path
+    as ``--test-dataset`` when training.
+    """
+    dataset_path = Path(dataset_dir)
+    dataset_path.mkdir(parents=True, exist_ok=True)
+
+    console.print(f"[bold]Pulling test dataset from:[/bold] [cyan]https://huggingface.co/datasets/{repo_id}[/cyan]")
+
+    snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        local_dir=str(dataset_path),
+    )
+
+    metadata_path = dataset_path / "metadata.jsonl"
+    img_count = sum(1 for _ in dataset_path.glob("images/**/*.png")) if (dataset_path / "images").exists() else 0
+    console.print(f"[bold green]Pulled test dataset to {dataset_dir}[/bold green]")
+    if metadata_path.exists():
+        with open(metadata_path, encoding="utf-8") as f:
+            line_count = sum(1 for line in f if line.strip())
+        console.print(f"  [dim]metadata.jsonl: {line_count} samples, {img_count} images[/dim]")

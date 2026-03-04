@@ -317,7 +317,8 @@ def _create_dataloaders(
     device: torch.device,
     repeat_aug: bool = False,
     repeat_aug_repeats: int = 3,
-) -> tuple[DataLoader, DataLoader]:
+    test_dataset: Dataset | None = None,
+) -> tuple[DataLoader, DataLoader, DataLoader | None]:
     num_workers = min(8, max(1, cpu_count() - 1))
     pin_memory = device.type == "cuda"
     persistent = num_workers > 0
@@ -372,7 +373,10 @@ def _create_dataloaders(
             )
 
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **common)
-    return train_loader, val_loader
+    test_loader = None
+    if test_dataset is not None:
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, **common)
+    return train_loader, val_loader, test_loader
 
 
 # ---------------------------------------------------------------------------
@@ -385,22 +389,34 @@ def _log_epoch_table(
     val_raw: dict[str, float],
     val_ema: dict[str, float],
     lr: float,
+    test_ema: dict[str, float] | None = None,
 ) -> None:
+    has_test = test_ema is not None
     table = Table(title=f"Epoch {epoch}", show_lines=True)
     table.add_column("Metric", style="bold")
     table.add_column("Train", justify="right")
     table.add_column("Val (raw)", justify="right")
     table.add_column("Val (EMA)", justify="right")
+    if has_test:
+        table.add_column("Test (EMA)", justify="right")
 
-    all_keys = dict.fromkeys(list(train) + list(val_raw) + list(val_ema))
+    all_keys = dict.fromkeys(
+        list(train) + list(val_raw) + list(val_ema) + (list(test_ema) if test_ema else [])
+    )
     for key in all_keys:
-        table.add_row(
+        row = [
             key,
             f"{train.get(key, 0):.5f}",
             f"{val_raw.get(key, 0):.5f}",
             f"{val_ema.get(key, 0):.5f}",
-        )
-    table.add_row("lr", f"{lr:.2e}", "", "")
+        ]
+        if has_test:
+            row.append(f"{test_ema.get(key, 0):.5f}")
+        table.add_row(*row)
+    lr_row = ["lr", f"{lr:.2e}", "", ""]
+    if has_test:
+        lr_row.append("")
+    table.add_row(*lr_row)
     console.print(table)
 
 
@@ -465,11 +481,27 @@ def train(cfg: Config) -> None:
     )
     console.print(f"Train: {len(train_dataset)} samples, Val: {len(val_dataset)} samples")
 
-    train_loader, val_loader = _create_dataloaders(
+    test_dataset = None
+    if cfg.data.test_dataset_path:
+        from digit_classifier.pareidolia_dataset import PareidoliaTestDataset
+        test_dataset = PareidoliaTestDataset(
+            root_dir=cfg.data.test_dataset_path,
+            color=cfg.data.color,
+            size=cfg.data.image_size,
+            mean=mean,
+            std=std,
+        )
+        console.print(
+            f"Test (pareidolia): {len(test_dataset)} samples (no augmentation)"
+            + (f", skipped {test_dataset.skipped} missing" if test_dataset.skipped else "")
+        )
+
+    train_loader, val_loader, test_loader = _create_dataloaders(
         train_dataset, val_dataset, cfg.data.batch_size,
         cfg.data.primary_fraction, device,
         repeat_aug=cfg.data.repeat_aug,
         repeat_aug_repeats=cfg.data.repeat_aug_repeats,
+        test_dataset=test_dataset,
     )
 
     # --- Mixup / CutMix ---
@@ -627,6 +659,13 @@ def train(cfg: Config) -> None:
             # copy to prevent accidental mutation later on
             val_metrics_ema = dict(val_metrics_raw)
 
+        test_metrics_ema: dict[str, float] | None = None
+        if test_loader is not None:
+            eval_model = ema if ema is not None else model
+            test_metrics_ema = validate(
+                eval_model, test_loader, val_criterion, metrics, device, use_amp=tc.amp_enabled
+            )
+
         # --- Pre-restart checkpoint (before scheduler.step) ---
         if warm_restart_epochs and (epoch + 1) in warm_restart_epochs:
             ckpt_root = checkpoint_dir if "checkpoint_dir" in dir() else "checkpoints"
@@ -656,16 +695,22 @@ def train(cfg: Config) -> None:
 
         # --- Logging ---
         current_lr = scheduler.get_last_lr()[0]
-        _log_epoch_table(epoch + 1, train_metrics, val_metrics_raw, val_metrics_ema, current_lr)
+        _log_epoch_table(
+            epoch + 1, train_metrics, val_metrics_raw, val_metrics_ema, current_lr,
+            test_ema=test_metrics_ema,
+        )
 
         if tc.wandb_enabled:
-            wandb.log({
+            log_dict = {
                 "epoch": epoch + 1,
                 "lr": current_lr,
                 **{f"train/{k}": v for k, v in train_metrics.items()},
                 **{f"val_raw/{k}": v for k, v in val_metrics_raw.items()},
                 **{f"val_ema/{k}": v for k, v in val_metrics_ema.items()},
-            })
+            }
+            if test_metrics_ema is not None:
+                log_dict.update({f"test_ema/{k}": v for k, v in test_metrics_ema.items()})
+            wandb.log(log_dict)
 
         # --- Best-model checkpoint ---
         val_accuracy = val_metrics_ema["accuracy"]

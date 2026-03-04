@@ -23,6 +23,7 @@ class DataConfig:
     repeat_aug_repeats: int = 3
     split_seed: int = 42
     mix_external: bool = True
+    test_dataset_path: str | None = None  # Pareidolia output dir (e.g. dataset_out) for test eval
     primary_fraction: float = 0.95
     gdrive_url: str = (
         "https://drive.google.com/uc?id=1_gIar-Q89tWll-dnJUE077UujzAVMPxQ"

@@ -1,0 +1,80 @@
+# Digit shape variations (from regional handwriting, typography, seven-segment)
+# Format: [digit_N] starts variations for digit N, one variation per line
+# Used to give the LLM multiple valid shape descriptions per digit
+
+[digit_0]
+single closed oval or circle, like O
+slightly squashed circle
+elliptical zero
+slashed zero (diagonal through center)
+zero with dot in center (Scandinavian)
+narrow vertical oval
+wide horizontal oval
+
+[digit_1]
+single vertical stroke, plain
+vertical with serif at top left
+vertical with base serif
+vertical with both top and base serifs
+European style with long upstroke from base
+Central European Z-style with two half-serifs
+tall vertical, no serifs
+
+[digit_2]
+curved top, diagonal down, horizontal base
+curly script style (US/German)
+flat-topped two
+angular two
+rounded curves
+swan-neck curve at top
+
+[digit_3]
+two curved lobes, top and bottom
+flat top like ezh (Ʒ)
+rounded double-curve
+angular three
+cursive three with connecting stroke
+
+[digit_4]
+open-top: vertical stroke on right, horizontal bar across top, diagonal from upper-left
+seven-segment style: all vertical or horizontal strokes, angular
+closed-top: with triangular closed top
+vertical right, horizontal top, diagonal meeting at right angle
+Eastern European lightning-bolt style
+crossed form: horizontal bar crosses the vertical
+sharp angles, open top, distinct right-angle junction
+
+[digit_5]
+top bar, curved top-right, horizontal base
+rounded belly, straight stem
+angular five
+script five with extended stem (Taiwan style)
+S-shaped curve in middle
+
+[digit_6]
+closed loop with curved stem descending on right
+loop at top, stem curls down right
+straight stem rather than curled ascender
+upright six, distinct from nine
+
+[digit_7]
+horizontal top, diagonal down to right
+with crossbar through middle (European)
+serif at upper left
+angled stroke, no crossbar
+two horizontal bars (Taiwan)
+
+[digit_8]
+two stacked loops, top and bottom
+two circles
+single continuous lemniscate motion
+sideways figure-eight
+teardrop shapes stacked
+
+[digit_9]
+closed loop with stem descending on left
+loop at top, stem down left
+European style with hook at bottom (g-like)
+straight stem to baseline
+upright nine, distinct from six
+loop on right of stem (East Asian)

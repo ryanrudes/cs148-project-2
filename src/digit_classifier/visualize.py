@@ -42,7 +42,7 @@ def visualize_batches(cfg: Config, num_batches: int = 1) -> None:
     )
 
     device = torch.device("cpu")
-    train_loader, _ = _create_dataloaders(
+    train_loader, _, _ = _create_dataloaders(
         train_dataset, train_dataset, cfg.data.batch_size,
         cfg.data.primary_fraction, device,
     )

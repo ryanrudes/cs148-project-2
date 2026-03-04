@@ -18,6 +18,11 @@ datasets/
 checkpoints/
 wandb/
 ckpt/
+dataset_out/
+
+# Secrets (never commit)
+.env
+.env.*
 
 # OS
 .DS_Store

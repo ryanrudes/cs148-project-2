@@ -1,0 +1,1874 @@
+# Pareidolia variety options - ~100 per category
+# Format: [category_name] starts a section, one option per line
+# Blank lines and # comments are ignored
+
+[capture_medium]
+phone snapshot
+medium format film
+CCTV or security camera
+dashcam
+drone aerial
+microscope
+flatbed scanner
+photocopier
+underwater housing
+thermal or IR camera
+satellite or aerial survey
+medical imaging style
+stop-motion frame
+webcam
+disposable camera
+large format
+Polaroid or instant film
+action cam
+vintage rangefinder
+scientific documentation camera
+body cam or helmet cam
+trail cam or wildlife camera
+doorbell cam
+baby monitor
+vintage box camera
+toy or novelty camera
+film SLR
+digital point-and-shoot
+mirrorless
+super 8 or 8mm film
+VHS or camcorder
+surveillance DVR frame
+document scanner
+slide projector
+overhead projector
+document camera
+borescope
+USB microscope
+telescope eyepiece
+binoculars view
+periscope
+peephole or door viewer
+rearview mirror cam
+bike cam
+skateboard or helmet POV
+gimbal-stabilized
+handheld shaky
+tripod static
+GoPro style
+iPhone or smartphone
+film point-and-shoot
+instant camera
+pinhole camera
+Holga or Diana
+lomography
+car backup camera
+ATM camera
+vending machine camera
+elevator security cam
+parking garage camera
+traffic cam
+weather cam
+nest or ring doorbell
+baby monitor night vision
+nanny cam
+hidden camera aesthetic
+spy camera
+police body cam
+firefighter helmet cam
+construction hard hat cam
+mining helmet lamp cam
+scuba diver camera
+kayak mount
+bike handlebar mount
+motorcycle helmet cam
+horse riding POV
+skydiving helmet cam
+paragliding cam
+RC plane FPV
+quadcopter gimbal
+fixed-wing drone
+handheld gimbal
+selfie stick
+tripod with remote
+monopod
+shoulder rig
+Steadicam
+dolly track
+crane or jib
+handheld documentary
+run-and-gun
+locked-off static
+time-lapse frame
+long exposure
+multiple exposure
+double exposure
+scanning electron microscope
+optical microscope
+confocal microscope
+x-ray
+CT scan slice
+MRI
+ultrasound
+endoscopic medical
+laparoscopic
+dental camera
+ophthalmoscope
+otoscope
+dermatoscope
+spectrometer output
+chromatography
+oscilloscope
+radar display
+sonar display
+lidar point cloud
+3D scanner
+photogrammetry
+structure from motion
+
+[setting]
+outdoor daylight wide
+aerial or elevated viewpoint
+street-level urban
+indoor domestic
+indoor office or commercial
+industrial exterior
+nature close-up plant bark rock
+documentary or editorial
+overcast or diffuse daylight
+night or low-light urban
+studio or controlled
+extreme close-up macro
+distant or establishing shot
+outdoor suburban
+warehouse or factory floor
+park or garden
+beach or shoreline
+construction site
+retail or market
+through window or reflection
+alley or backstreet
+parking lot or garage
+highway or roadside
+farm or rural
+forest or woodland
+desert or arid
+mountain or hillside
+riverbank or creek
+rooftop or balcony
+basement or cellar
+attic or loft
+bathroom or kitchen
+bedroom or living room
+classroom or lecture hall
+library or archive
+museum or gallery
+gym or sports facility
+hospital or clinic
+restaurant or cafe
+bar or nightclub
+airport or train station
+bus or transit interior
+car interior
+boat or ship deck
+playground or schoolyard
+cemetery or memorial
+junkyard or salvage
+greenhouse or nursery
+barn or shed
+bridge or overpass
+tunnel entrance
+courtyard or plaza
+stairwell or corridor
+elevator
+loading dock
+gas station
+convenience store
+laundromat
+auto repair shop
+machine shop
+printing press room
+darkroom
+server room
+laboratory
+cleanroom
+botanical garden
+zoo enclosure
+aquarium
+swimming pool
+sauna or steam room
+locker room
+changing room
+fitting room
+backstage
+theater stage
+concert venue
+sports arena
+stadium
+race track
+golf course
+tennis court
+basketball court
+skate park
+bowling alley
+arcade
+casino
+hotel lobby
+hotel room
+motel
+hostel
+cabin or cottage
+tent interior
+RV or camper
+train compartment
+airplane cabin
+ferry deck
+subway platform
+bus shelter
+taxi interior
+ambulance interior
+fire truck
+police car
+military vehicle
+helicopter
+submarine
+space station
+lunar surface
+martian landscape
+soundstage
+film set
+photo studio
+product studio
+food photography set
+fashion runway
+catwalk
+red carpet
+press conference
+interview setup
+podcast studio
+streaming setup
+gaming setup
+home office
+kitchen counter
+dining table
+coffee table
+bookshelf
+closet
+garage
+tool shed
+workshop
+artist studio
+pottery studio
+weaving loom
+sewing room
+craft room
+music room
+recording booth
+church interior
+temple
+mosque
+synagogue
+cathedral
+chapel
+shrine
+monastery
+cave entrance
+canyon
+gorge
+waterfall
+lake shore
+ocean view
+cliff edge
+volcano
+glacier
+tundra
+savanna
+rainforest
+mangrove
+wetland
+marsh
+quarry
+mine entrance
+oil rig
+wind farm
+solar farm
+power plant
+dam
+reservoir
+canal
+dock
+pier
+marina
+harbor
+port
+
+[lighting]
+overcast daylight
+sodium vapor streetlight
+harsh noon sun
+backlit or silhouette
+mixed fluorescent
+candlelight
+flash or strobe
+lightning or storm
+moonlit
+aquarium or colored pool light
+tungsten incandescent
+soft window light
+neon or signage
+fire or ember
+LED panel or ring soft not dark void
+overcast or diffuse
+golden hour
+blue hour
+mixed artificial
+mercury vapor
+metal halide
+halogen
+daylight balanced
+mixed daylight and tungsten
+dappled sunlight through leaves
+open shade
+direct sun
+reflector bounce
+rim light
+split lighting
+Rembrandt lighting
+butterfly lighting
+loop lighting
+broad lighting
+short lighting
+high key
+low key
+chiaroscuro
+north light
+skylight
+car headlights
+streetlamp
+flashlight or torch
+match or lighter
+screen glow
+bioluminescence
+blacklight or UV
+stage spotlight
+practical lamp in scene
+overcast twilight
+cloudy bright
+open sky overcast
+cove lighting
+track lighting
+recessed lighting
+pendant light
+chandelier
+sconce
+floor lamp
+table lamp
+desk lamp
+clip light
+work light
+floodlight
+spotlight
+par can
+fresnel
+softbox
+umbrella
+beauty dish
+ring light
+strip light
+fairy lights
+string lights
+lantern
+candle
+oil lamp
+gas lamp
+kerosene
+campfire
+torch
+flare
+sunset
+sunrise
+midday sun
+overcast
+dappled
+shade
+shadow
+silhouette
+rim
+back
+side
+front
+top
+bottom
+three-point
+four-point
+natural
+mixed
+practical
+motivated
+ambient
+fill
+key
+hair
+kicker
+bounce
+negative fill
+diffuse
+hard
+soft
+directional
+flat
+contrasty
+moody
+bright
+dim
+warm
+cool
+neutral
+colored
+gelled
+filtered
+reflected
+transmitted
+absorbed
+scattered
+refracted
+diffracted
+polarized
+coherent
+incoherent
+continuous
+strobe
+pulsed
+flickering
+steady
+moving
+static
+animated
+practical
+
+[camera_quality]
+consumer phone
+prosumer DSLR
+vintage film grain
+cheap CCTV
+broadcast or broadcast-style
+scientific or lab
+archival scan
+disposable camera
+webcam compression
+medium format
+action cam
+Polaroid
+security cam
+dashcam
+drone
+early digital
+VHS or analog video
+super 8 grain
+large format sharp
+toy camera lo-fi
+high-end cinema
+news broadcast
+sports broadcast
+surveillance DVR
+doorbell cam
+trail cam
+microscope CCD
+thermal sensor
+satellite imagery
+medical imaging
+document scan
+photocopier
+fax or thermal print
+LCD or CRT screen capture
+projector output
+8mm
+16mm
+35mm
+65mm
+IMAX
+4K
+6K
+8K
+HD
+SD
+VGA
+QVGA
+compressed
+raw
+log
+rec709
+rec2020
+DCI-P3
+sRGB
+Adobe RGB
+ProRes
+DNxHD
+H.264
+H.265
+AV1
+JPEG
+PNG
+TIFF
+RAW
+DNG
+CR2
+NEF
+ARW
+ORF
+RAF
+grainy
+clean
+noisy
+sharp
+soft
+high contrast
+low contrast
+flat
+punchy
+muted
+vivid
+saturated
+desaturated
+colorful
+monochrome
+sepia
+cyanotype
+daguerreotype
+tintype
+ambrotype
+calotype
+albumen
+gelatin silver
+platinum
+palladium
+carbon
+gum bichromate
+oil
+encaustic
+collage
+photomontage
+double exposure
+multiply
+overlay
+blur
+motion
+freeze
+pan
+zoom
+tilt
+shift
+macro
+micro
+tele
+wide
+normal
+fisheye
+anamorphic
+orthographic
+
+[composition]
+off-center rule-of-thirds
+asymmetric
+extreme close-up
+wide establishing
+side angle or three-quarter
+low angle
+eye-level
+elevated or bird's-eye
+through foreground occlusion
+leading lines
+symmetrical
+tight crop
+negative space
+diagonal
+centered subject off-center in frame
+frame within frame
+layered depth
+flat graphic
+dynamic angle
+Dutch angle slight
+portrait orientation
+landscape orientation
+square crop feel
+panoramic
+split frame
+triptych feel
+overlapping elements
+isolated subject
+busy or dense
+minimal
+golden ratio
+Fibonacci spiral
+radial
+converging lines
+S-curve
+triangular
+circular layout not vignette
+centered
+eccentric
+top-heavy
+bottom-heavy
+left-weighted
+right-weighted
+balanced
+unbalanced
+dynamic
+static
+implied
+actual
+geometric
+organic
+random
+ordered
+grid
+flow
+rhythm
+repetition
+variation
+contrast
+harmony
+tension
+release
+closure
+open
+closed
+positive
+negative
+figure
+ground
+foreground
+midground
+background
+depth
+flat
+shallow
+deep
+compressed
+expanded
+cropped
+full
+partial
+fragment
+whole
+detail
+overview
+context
+isolation
+inclusion
+exclusion
+emphasis
+de-emphasis
+hierarchy
+equality
+scale
+proportion
+ratio
+balance
+imbalance
+symmetry
+asymmetry
+bilateral
+radial
+crystallographic
+rule of odds
+rule of space
+simplicity
+complexity
+unity
+variety
+emphasis
+subordination
+repetition
+pattern
+rhythm
+movement
+direction
+flow
+continuation
+closure
+proximity
+similarity
+common fate
+figure-ground
+gestalt
+grouping
+segregation
+
+[optics]
+wide angle with distortion
+telephoto compression
+macro lens
+soft focus
+sharp and clinical
+chromatic aberration
+lens flare
+shallow depth of field
+deep focus
+fisheye
+normal lens
+slight vignette subtle not circular cutout
+rolling shutter
+tilt-shift
+lensbaby or selective focus
+anamorphic squeeze
+bokeh balls
+swirly bokeh
+catadioptric or mirror lens
+extension tubes
+close-up filter
+soft diffusion
+star filter
+polarizer
+ND filter long exposure
+UV or haze filter
+dirty lens
+condensation on lens
+lens fungus or haze
+focus breathing
+parallax
+barrel distortion
+pincushion distortion
+mustache distortion
+field curvature
+coma
+astigmatism
+spherical aberration
+14mm
+24mm
+35mm
+50mm
+85mm
+100mm
+135mm
+200mm
+300mm
+400mm
+500mm
+600mm
+8mm fisheye
+15mm
+20mm
+28mm
+40mm
+55mm
+70mm
+90mm
+105mm
+180mm
+250mm
+400mm
+t1.4
+t1.8
+t2
+t2.8
+t4
+t5.6
+t8
+t11
+t16
+t22
+fast
+slow
+bright
+dark
+sharp
+soft
+glow
+halation
+flare
+ghosting
+veiling
+fogging
+hazing
+blooming
+bleeding
+fringing
+ca
+purple
+green
+blue
+red
+yellow
+lateral
+longitudinal
+axial
+tangential
+sagittal
+meridional
+petzval
+gauss
+double-gauss
+planar
+sonnar
+distagon
+tessar
+heliar
+skopar
+nokton
+ultron
+color
+apo
+achromat
+semi-apo
+super-apo
+fluorite
+ed
+ud
+aspheric
+spheric
+hybrid
+plastic
+glass
+crystal
+quartz
+sapphire
+
+[time_of_day]
+dawn
+midmorning
+noon
+afternoon
+golden hour
+blue hour
+dusk
+night
+overcast no distinct time
+artificial light only
+pre-dawn
+late morning
+midday
+early afternoon
+late afternoon
+twilight
+civil twilight
+nautical twilight
+astronomical twilight
+midnight
+early morning
+late night
+shift change or transitional
+sunrise
+sunset
+high noon
+mid-morning
+mid-afternoon
+early evening
+late evening
+predawn
+post-sunset
+first light
+last light
+daybreak
+nightfall
+morning
+evening
+midnight
+early hours
+wee hours
+cocktail hour
+happy hour
+rush hour
+lunch hour
+tea time
+dinner time
+bedtime
+wake-up
+shift start
+shift end
+break
+recess
+commute
+siesta
+siesta
+siesta
+siesta
+midnight sun
+polar night
+polar day
+equinox
+solstice
+summer
+winter
+spring
+fall
+dry season
+wet season
+monsoon
+harvest
+planting
+growing
+dormant
+active
+quiet
+busy
+peak
+off-peak
+empty
+full
+early
+late
+on time
+delayed
+advanced
+standard
+daylight saving
+local
+solar
+lunar
+sidereal
+stellar
+atomic
+mechanical
+digital
+analog
+approximate
+precise
+estimated
+actual
+scheduled
+unscheduled
+regular
+irregular
+
+[atmosphere]
+clear
+overcast
+rain or wet
+fog or mist
+haze
+dust in air
+smoke
+snow
+humid or steamy
+dry and dusty
+light rain
+heavy rain
+drizzle
+thick fog
+light mist
+industrial haze
+pollen or spring haze
+smog
+sea spray
+sand or dust storm
+blowing snow
+falling snow
+frost
+condensation
+steam
+smoke from fire
+exhaust or exhaust fumes
+pollen
+pet dander in light
+dust motes in light beam
+heat shimmer
+mirage
+rainbow or prism
+aurora
+cloudy
+partly cloudy
+mostly clear
+overcast
+stormy
+thunderstorm
+snowstorm
+sleet
+hail
+freezing rain
+ice fog
+ground fog
+valley fog
+sea fog
+advection fog
+radiation fog
+upslope fog
+evaporation fog
+freezing fog
+mist
+haze
+smog
+vog
+dust
+sand
+silt
+ash
+soot
+smoke
+steam
+vapor
+spray
+spume
+spindrift
+blowing snow
+drifting snow
+ground blizzard
+whiteout
+black ice
+frost
+rime
+hoar frost
+frost flowers
+dew
+mist
+fog
+haze
+smoke
+dust devil
+sandstorm
+haboob
+derecho
+squall
+microburst
+downburst
+gust front
+cold front
+warm front
+occluded front
+stationary front
+dry line
+trough
+ridge
+high
+low
+tropical
+polar
+arctic
+maritime
+continental
+monsoon
+trade wind
+jet stream
+el nino
+la nina
+blocking
+zonal
+meridional
+cyclonic
+anticyclonic
+convective
+stratiform
+orographic
+frontal
+convective
+advective
+radiative
+transparent
+opaque
+translucent
+clear
+murky
+crystal
+pristine
+polluted
+clean
+dirty
+
+[color_treatment]
+cool cast
+warm cast
+desaturated
+high contrast
+pastel wash
+tungsten balance
+sickly green fluorescent
+vintage or faded
+cinematic teal-orange
+natural
+monochrome or near-monochrome
+cross-processed
+Kodachrome
+Ektachrome
+Fuji Velvia
+Agfa
+Polaroid
+Instagram filter
+film noir
+technicolor
+bleach bypass
+silver retention
+split toning
+duotone
+tritone
+color pop
+muted earth tones
+vivid saturated
+washed out
+crushed blacks
+lifted blacks
+high key pastel
+low key rich
+daylight balanced
+fluorescent green
+mercury vapor green
+sodium vapor orange
+mixed color temps
+IR false color
+thermal palette
+sepia
+cyanotype
+daguerreotype
+tintype
+albumen
+platinum
+palladium
+carbon
+gum
+oil
+cool
+warm
+neutral
+balanced
+unbalanced
+saturated
+desaturated
+muted
+vivid
+pastel
+earth
+primary
+secondary
+complementary
+analogous
+triadic
+tetradic
+split
+double
+square
+monochromatic
+achromatic
+polychromatic
+heterochromatic
+homochromatic
+isochromatic
+allochromatic
+idiochromatic
+pleochroic
+dichroic
+trichroic
+polychroic
+red
+orange
+yellow
+green
+blue
+indigo
+violet
+purple
+pink
+magenta
+cyan
+teal
+turquoise
+aqua
+lime
+olive
+amber
+gold
+bronze
+copper
+silver
+gray
+charcoal
+slate
+navy
+maroon
+burgundy
+crimson
+scarlet
+vermilion
+coral
+salmon
+peach
+apricot
+cream
+ivory
+eggshell
+off-white
+bone
+beige
+tan
+brown
+sienna
+umber
+ochre
+rust
+terracotta
+brick
+mahogany
+walnut
+espresso
+mocha
+chocolate
+caramel
+toffee
+honey
+mustard
+butter
+lemon
+lime
+mint
+sage
+forest
+emerald
+jade
+teal
+turquoise
+aquamarine
+sky
+cobalt
+navy
+indigo
+violet
+lavender
+lilac
+plum
+mauve
+magenta
+fuchsia
+rose
+blush
+dusty rose
+brick
+terracotta
+
+[artifacts]
+motion blur
+sensor noise
+dust on lens
+scratches
+compression blocks
+lens haze
+bloom or halation
+banding
+lens flare
+chromatic fringing
+film grain
+none clean
+dead pixels
+hot pixels
+moire
+aliasing
+JPEG artifacts
+MPEG blocking
+VHS tracking
+scan lines
+interlacing
+lens dust
+fingerprint on lens
+water droplets
+light leak
+film scratch
+development stain
+print texture
+halation
+glow
+ghosting
+double exposure
+light streak
+motion trail
+rolling shutter warp
+persistence
+bloom
+flare
+veiling
+fogging
+hazing
+bleeding
+bleeding
+fringing
+purple
+green
+bloom
+glow
+halo
+aura
+corona
+lens
+sensor
+film
+print
+scan
+digital
+analog
+optical
+mechanical
+chemical
+electrical
+magnetic
+thermal
+acoustic
+quantum
+shot
+read
+dark
+fixed
+pattern
+banding
+striping
+blocking
+tiling
+pixelation
+jaggies
+staircasing
+aliasing
+moire
+interference
+beat
+artifact
+defect
+flaw
+imperfection
+noise
+grain
+speckle
+snow
+static
+flicker
+jitter
+wobble
+drift
+shift
+blur
+smear
+streak
+trail
+ghost
+echo
+double
+triple
+multiple
+overlay
+underlay
+bleed
+bleed
+bleed
+bleed
+bleed
+bleed
+bleed
+bleed
+bleed
+
+[viewpoint]
+eye level
+low angle
+elevated
+street-level
+through window
+reflection
+over shoulder
+direct
+slightly above
+slightly below
+worm's eye
+bird's eye
+Dutch angle
+canted
+oblique
+profile
+three-quarter
+full face
+from behind
+through doorway
+through fence
+through foliage
+mirror or reflective surface
+through glass
+through water surface
+from vehicle
+from above looking down
+from below looking up
+isometric
+forced perspective
+high
+low
+medium
+top-down
+bottom-up
+side
+front
+back
+left
+right
+oblique
+diagonal
+angled
+tilted
+rotated
+inverted
+reversed
+mirrored
+overhead
+underneath
+beside
+behind
+before
+after
+during
+between
+among
+within
+without
+inside
+outside
+above
+below
+beyond
+past
+through
+across
+along
+around
+over
+under
+near
+far
+close
+distant
+nearby
+remote
+adjacent
+opposite
+facing
+away
+toward
+from
+into
+out of
+onto
+off of
+up
+down
+left
+right
+forward
+back
+sideways
+diagonal
+oblique
+tangential
+radial
+axial
+longitudinal
+transverse
+sagittal
+coronal
+horizontal
+vertical
+diagonal
+angled
+tilted
+level
+plumb
+square
+true
+parallel
+perpendicular
+orthogonal
+oblique
+skew
+
+[material_context]
+industrial
+domestic
+natural outdoor
+urban
+aquatic
+scientific
+archival
+retail
+construction
+agricultural
+craft or workshop
+automotive
+aviation
+maritime
+medical
+educational
+recreational
+religious
+military
+mining or extraction
+food service
+hospitality
+entertainment
+transportation
+utility or infrastructure
+residential
+commercial
+institutional
+abandoned or derelict
+museum or historical
+garden or horticultural
+wildlife or zoological
+metal
+wood
+stone
+concrete
+brick
+glass
+plastic
+fabric
+paper
+leather
+ceramic
+porcelain
+ceramic
+porcelain
+ceramic
+rust
+patina
+weathered
+aged
+new
+worn
+polished
+rough
+smooth
+textured
+matte
+glossy
+satin
+metallic
+pearl
+organic
+inorganic
+synthetic
+natural
+man-made
+raw
+processed
+refined
+crude
+pure
+mixed
+alloy
+composite
+laminate
+layered
+solid
+liquid
+gas
+plasma
+gel
+foam
+powder
+granular
+fibrous
+crystalline
+amorphous
+polycrystalline
+single crystal
+nanocrystalline
+microcrystalline
+macrocrystalline
+cryptocrystalline
+opaque
+transparent
+translucent
+opalescent
+iridescent
+phosphorescent
+fluorescent
+luminescent
+reflective
+absorptive
+emissive
+transmissive
+conductive
+insulative
+magnetic
+dielectric
+elastic
+plastic
+brittle
+ductile
+malleable
+hard
+soft
+flexible
+rigid
+stiff
+dense
+porous
+compact
+loose
+tight
+wet
+dry
+moist
+arid
+humid
+cold
+hot
+warm
+cool
+temperate
+frozen
+molten
+vaporized
+sublimated
+
+[era_or_aesthetic]
+1970s documentary
+1980s consumer photography
+1990s point-and-shoot
+early 2000s digital
+Soviet-era industrial
+Bauhaus or minimalist
+surrealist or dreamlike
+noir or high contrast
+kodachrome nostalgia
+cold war sci-fi
+nature documentary
+true crime evidence
+architectural survey
+product photography
+forensic or evidence
+travel snapshot
+scientific illustration
+vintage advertisement
+news reportage
+amateur enthusiast
+Victorian
+Edwardian
+Art Deco
+Art Nouveau
+Mid-century modern
+Brutalist
+Postmodern
+Deconstructivist
+Minimalist
+Maximalist
+Industrial
+Rustic
+Bohemian
+Preppy
+Grunge
+Gothic
+Romantic
+Classical
+Baroque
+Rococo
+Renaissance
+Medieval
+Ancient
+Primitive
+Tribal
+Folk
+Naive
+Outsider
+Street
+Graffiti
+Urban
+Suburban
+Rural
+Coastal
+Mountain
+Desert
+Tropical
+Arctic
+Temperate
+Mediterranean
+Scandinavian
+Japanese
+Chinese
+Indian
+African
+Latin American
+Middle Eastern
+European
+American
+British
+French
+German
+Italian
+Spanish
+Dutch
+Belgian
+Swiss
+Austrian
+Nordic
+Baltic
+Slavic
+Celtic
+Greek
+Turkish
+Persian
+Arabic
+Hebrew
+Korean
+Thai
+Vietnamese
+Indonesian
+Malaysian
+Filipino
+Pacific
+Australian
+New Zealand
+Polynesian
+Melanesian
+Micronesian
+Caribbean
+South American
+Central American
+North American
+Canadian
+Mexican
+Brazilian
+Argentine
+Chilean
+Colombian
+Peruvian
+retro
+vintage
+antique
+modern
+contemporary
+futuristic
+post-apocalyptic
+dystopian
+utopian
+realistic
+stylized
+abstract
+figurative
+conceptual
+documentary
+fictional
+narrative
+non-narrative
+experimental
+traditional
+avant-garde
+mainstream
+indie
+studio
+location
+stage
+set
+found
+constructed
+assembled
+disassembled
+
+[uniqueness_avoid]
+do NOT use dark moody underground aesthetic
+do NOT use centered subject in void
+do NOT use cable or wire on rusted metal
+do NOT use spilled liquid on pavement
+do NOT use roots or vines on wall
+do NOT use circular vignette or dark frame
+do NOT use endoscope or pipe interior
+do NOT use neon on black background
+do NOT use macro of cracks or texture
+do NOT use thermal imaging style
+do NOT use security cam green tint
+do NOT use single object on plain surface
+do NOT use fog or mist obscuring
+do NOT use extreme close-up only
+do NOT use industrial inspection vibe
+do NOT use cable tangle as main subject
+do NOT use paint peel or rust pattern
+do NOT use rope or cord arrangement
+do NOT use shadow on flat ground
+do NOT use seaweed or organic tangle
+do NOT use tunnel or sewer
+do NOT use ring flash in dark void
+do NOT use perfectly centered composition
+do NOT use driftwood or beach debris
+do NOT use cracks in pavement
+do NOT use abstract pattern only
+do NOT use vines on brick wall
+do NOT use spilled coffee or liquid
+do NOT use condensation on glass
+do NOT use steam or smoke obscuring
+do NOT use silhouette only
+do NOT use high contrast noir
+do NOT use single light source void
+do NOT use microscope slide
+do NOT use petri dish
+do NOT use circuit board
+do NOT use wire mesh
+do NOT use chain link fence
+do NOT use barbed wire
+do NOT use metal grating
+do NOT use concrete texture
+do NOT use asphalt close-up
+do NOT use wood grain
+do NOT use marble texture
+do NOT use granite pattern
+do NOT use leaf pattern
+do NOT use bark texture
+do NOT use rock formation
+do NOT use sand dune
+do NOT use water surface
+do NOT use ice formation
+do NOT use snow drift
+do NOT use cloud formation
+do NOT use sky only
+do NOT use grass close-up
+do NOT use flower close-up
+do NOT use insect macro
+do NOT use spider web
+do NOT use cobweb
+do NOT use dust particles
+do NOT use light rays
+do NOT use lens flare only
+do NOT use bokeh only
+do NOT use motion blur only
+do NOT use double exposure
+do NOT use reflection only
+do NOT use shadow only
+do NOT use silhouette only
+do NOT use high key
+do NOT use low key
+do NOT use flat lighting
+do NOT use harsh noon
+do NOT use golden hour
+do NOT use blue hour
+do NOT use sodium vapor
+do NOT use fluorescent
+do NOT use candlelight
+do NOT use firelight
+do NOT use moonlight
+do NOT use starlight
+do NOT use flashlight
+do NOT use screen glow
+do NOT use neon sign
+do NOT use LED strip
+do NOT use Christmas lights
+do NOT use fairy lights
+do NOT use street lamp
+do NOT use car headlight
+do NOT use stage light
+do NOT use studio light
+do NOT use softbox
+do NOT use umbrella
+do NOT use ring light
+do NOT use beauty dish
+do NOT use fresnel
+do NOT use par can
+do NOT use spotlight
+do NOT use floodlight
+do NOT use work light
+do NOT use practical
+do NOT use motivated
+do NOT use natural
+do NOT use artificial
+do NOT use mixed
+do NOT use available
+do NOT use ambient
+do NOT use fill
+do NOT use key
+do NOT use back
+do NOT use rim
+do NOT use hair
+do NOT use kicker
+do NOT use bounce
+do NOT use negative
+do NOT use three-point
+do NOT use Rembrandt
+do NOT use butterfly
+do NOT use loop
+do NOT use split
+do NOT use broad
+do NOT use short
+
