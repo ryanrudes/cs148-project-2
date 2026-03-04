@@ -32,8 +32,9 @@ class DataConfig:
 
 @dataclass
 class ModelConfig:
-    """Architecture hyper-parameters for the ResNeXt model."""
+    """Architecture hyper-parameters for ResNeXt or DeiT."""
 
+    model_type: str = "deit"  # "resnext" or "deit"
     layers: tuple[int, ...] = (3, 4, 23, 3)
     num_classes: int = 10
     groups: int = 64

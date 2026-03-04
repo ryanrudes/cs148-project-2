@@ -59,6 +59,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             test_dataset_path=args.test_dataset,
         ),
         model=ModelConfig(
+            model_type=args.model_type,
             layers=tuple(args.layers),
             num_classes=args.num_classes,
             groups=args.groups,
@@ -107,10 +108,7 @@ def _handle_infer(args: argparse.Namespace) -> None:
     from digit_classifier.inference import run_inference
     run_inference(
         checkpoint_path=args.checkpoint,
-        layers=tuple(args.layers),
         num_classes=args.num_classes,
-        groups=args.groups,
-        width_per_group=args.width_per_group,
         input_size=args.size,
         input_channels=args.input_channels,
         camera_index=args.camera,
@@ -124,38 +122,21 @@ def _handle_infer(args: argparse.Namespace) -> None:
 def _handle_export_pipeline(args: argparse.Namespace) -> None:
     """Compile model + transforms into a TorchScript pipeline and save or push to HF Hub.
 
-    The handler mirrors the `infer` model construction so the exported pipeline
-    uses the same architecture and weights as the provided checkpoint.
+    The handler uses build_model_from_checkpoint so the exported pipeline
+    uses the same architecture (ResNeXt or DeiT) and weights as the checkpoint.
     """
     import os
     import torch
 
-    from digit_classifier.model import ResNeXt
+    from digit_classifier.training import build_model_from_checkpoint
     from digit_classifier.pipeline import DigitClassifierPipeline
-    # reuse the small helper from inference to strip torch.compile prefixes
-    from digit_classifier.inference import _strip_compile_prefix
 
-    # load model to CPU for scripting
     dev = torch.device("cpu")
-    model = ResNeXt(
-        layers=list(args.layers),
-        num_classes=args.num_classes,
-        groups=args.groups,
-        width_per_group=args.width_per_group,
-    ).to(dev)
+    model, ckpt = build_model_from_checkpoint(
+        args.checkpoint, dev, model_type=getattr(args, "model_type", None)
+    )
 
-    ckpt = torch.load(args.checkpoint, map_location=dev, weights_only=False)
-    state = ckpt.get("ema_state_dict", ckpt.get("model_state_dict"))
-    if state is None:
-        raise KeyError("Checkpoint must contain 'ema_state_dict' or 'model_state_dict'")
-    stripped = _strip_compile_prefix(state)
-    # Drop AveragedModel extras (e.g. n_averaged) — keep only keys the model expects
-    model_keys = set(model.state_dict().keys())
-    filtered = {k: v for k, v in stripped.items() if k in model_keys}
-    model.load_state_dict(filtered, strict=True)
-    model.eval()
-
-    # determine mean/std: checkpoint > CLI args > fallback 0.5/0.5
+    # Determine mean/std: checkpoint > CLI args > fallback 0.5/0.5
     if "mean" in ckpt and "std" in ckpt:
         mean = list(ckpt["mean"])
         std = list(ckpt["std"])
@@ -319,7 +300,11 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--test-dataset", type=str, default=None,
                     help="Pareidolia output dir (e.g. dataset_out) for test evaluation; no augmentation")
     # Model
-    tr.add_argument("--layers", type=int, nargs="+", default=[3, 4, 23, 3])
+    tr.add_argument("--model", dest="model_type", type=str, default="deit",
+                    choices=["resnext", "deit"],
+                    help="Model architecture: resnext or deit (default: deit)")
+    tr.add_argument("--layers", type=int, nargs="+", default=[3, 4, 23, 3],
+                    help="ResNeXt layer config (e.g. 3 4 23 3); ignored for deit")
     tr.add_argument("--num-classes", type=int, default=10)
     tr.add_argument("--groups", type=int, default=64)
     tr.add_argument("--width-per-group", type=int, default=4)

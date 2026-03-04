@@ -185,10 +185,80 @@ def _get_param_groups(
 # Warm-restart epoch computation
 # ---------------------------------------------------------------------------
 
+def _get_model_config_for_checkpoint(mc, image_size: int) -> dict:
+    """Build model_config dict with only params relevant to the model type."""
+    base = {"num_classes": mc.num_classes}
+    if mc.model_type == "resnext":
+        base.update({
+            "layers": list(mc.layers),
+            "groups": mc.groups,
+            "width_per_group": mc.width_per_group,
+        })
+    else:
+        base.update({
+            "deit_model": mc.deit_model,
+            "image_size": image_size,
+        })
+    return base
+
+
 def _get_deit_model(model: nn.Module) -> nn.Module | None:
     """Get the underlying DeiT3 from a possibly torch.compile-wrapped model."""
     m = getattr(model, "_orig_mod", model)
     return m if hasattr(m, "set_drop_path_rate") else None
+
+
+def _infer_model_type_from_state_dict(state_dict: dict) -> str:
+    """Infer model type from state dict keys (for old checkpoints without model_type)."""
+    keys = list(state_dict.keys())
+    if any(k.startswith("blocks.") for k in keys):
+        return "deit"
+    return "resnext"
+
+
+def build_model_from_checkpoint(
+    checkpoint_path: str,
+    device: torch.device,
+    *,
+    model_type: str | None = None,
+) -> tuple[nn.Module, dict]:
+    """Load checkpoint and build the appropriate model (ResNeXt or DeiT).
+
+    Returns (model, ckpt_dict). If model_type is None, uses checkpoint metadata
+    or infers from state dict keys.
+    """
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state = ckpt.get("ema_state_dict", ckpt.get("model_state_dict"))
+    if state is None:
+        raise KeyError("Checkpoint must contain 'ema_state_dict' or 'model_state_dict'")
+
+    mt = model_type or ckpt.get("model_type") or _infer_model_type_from_state_dict(state)
+    config = ckpt.get("model_config", {})
+
+    num_classes = config.get("num_classes", 10)
+    stripped = {k.replace("_orig_mod.", "").replace("module.", ""): v for k, v in state.items()}
+
+    if mt == "resnext":
+        model = ResNeXt(
+            layers=config.get("layers", [3, 4, 23, 3]),
+            num_classes=num_classes,
+            groups=config.get("groups", 64),
+            width_per_group=config.get("width_per_group", 4),
+        ).to(device)
+    else:
+        from digit_classifier.vit import build_deit3
+        model = build_deit3(
+            size=config.get("deit_model", "base"),
+            num_classes=num_classes,
+            drop_path_rate=0.0,
+            image_size=config.get("image_size", 224),
+        ).to(device)
+
+    model_keys = set(model.state_dict().keys())
+    filtered = {k: v for k, v in stripped.items() if k in model_keys}
+    model.load_state_dict(filtered, strict=True)
+    model.eval()
+    return model, ckpt
 
 
 def compute_warm_restart_epochs(
@@ -517,26 +587,26 @@ def train(cfg: Config) -> None:
     ))
 
     # --- Model ---
-    """
-    model_name = "ResNeXt"  # Capture before torch.compile changes __class__
-    model = ResNeXt(
-        layers=list(cfg.model.layers),
-        num_classes=cfg.model.num_classes,
-        groups=cfg.model.groups,
-        width_per_group=cfg.model.width_per_group,
-        drop_path_rate=cfg.model.drop_path_rate,
-    ).to(device)
-    """
-
-    model_name = f"deit3_{cfg.model.deit_model}_patch16_224"
-    model = build_deit3(
-        size=cfg.model.deit_model,
-        num_classes=cfg.model.num_classes,
-        drop_path_rate=cfg.model.drop_path_rate,
-        image_size=cfg.data.image_size,
-        use_flash_attention=cfg.model.use_flash_attention,
-        init_values=cfg.model.layer_scale_init,
-    ).to(device)
+    mc = cfg.model
+    if mc.model_type == "resnext":
+        model_name = "ResNeXt"
+        model = ResNeXt(
+            layers=list(mc.layers),
+            num_classes=mc.num_classes,
+            groups=mc.groups,
+            width_per_group=mc.width_per_group,
+            drop_path_rate=mc.drop_path_rate,
+        ).to(device)
+    else:
+        model_name = f"deit3_{mc.deit_model}_patch16_224"
+        model = build_deit3(
+            size=mc.deit_model,
+            num_classes=mc.num_classes,
+            drop_path_rate=mc.drop_path_rate,
+            image_size=cfg.data.image_size,
+            use_flash_attention=mc.use_flash_attention,
+            init_values=mc.layer_scale_init,
+        ).to(device)
 
     param_groups = _get_param_groups(
         model,
@@ -596,18 +666,21 @@ def train(cfg: Config) -> None:
     effective_batch_size = cfg.data.batch_size
 
     if tc.wandb_enabled:
-        wandb.init(
-            project=tc.wandb_project,
-            config={
-                "dataset": cfg.data.dataset_name,
-                "model": model_name,
-                "optimizer": optimizer.__class__.__name__,
-                "lr": tc.lr,
-                "batch_size": effective_batch_size,
-                "epochs": tc.epochs,
-                "device": device_name,
-            },
-        )
+        wandb_config = {
+            "dataset": cfg.data.dataset_name,
+            "model": model_name,
+            "optimizer": optimizer.__class__.__name__,
+            "lr": tc.lr,
+            "batch_size": effective_batch_size,
+            "epochs": tc.epochs,
+            "device": device_name,
+        }
+        # Log only model-relevant params
+        if mc.model_type == "resnext":
+            wandb_config.update({"layers": list(mc.layers), "groups": mc.groups, "width_per_group": mc.width_per_group})
+        else:
+            wandb_config.update({"deit_model": mc.deit_model})
+        wandb.init(project=tc.wandb_project, config=wandb_config)
         wandb.watch(model, log="gradients", log_freq=100)
         checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -676,6 +749,8 @@ def train(cfg: Config) -> None:
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_accuracy": val_metrics_ema.get("accuracy"),
+                "model_type": mc.model_type,
+                "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
             }
             if ema is not None:
                 save_dict["ema_state_dict"] = ema.state_dict()
@@ -722,6 +797,8 @@ def train(cfg: Config) -> None:
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_accuracy": val_accuracy,
+                "model_type": mc.model_type,
+                "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
             }
             if ema is not None:
                 save_dict["ema_state_dict"] = ema.state_dict()

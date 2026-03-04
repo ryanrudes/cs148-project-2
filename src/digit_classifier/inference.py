@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from rich.console import Console
 
-from digit_classifier.model import ResNeXt
+from digit_classifier.training import build_model_from_checkpoint
 
 console = Console()
 
@@ -84,10 +84,7 @@ def _overlay_prediction(frame: np.ndarray, pred: int, conf: float, mode: str) ->
 def run_inference(
     checkpoint_path: str,
     *,
-    layers: list[int] | tuple[int, ...] = (3, 4, 23, 3),
     num_classes: int = 10,
-    groups: int = 64,
-    width_per_group: int = 4,
     input_size: int = 224,
     input_channels: int = 3,
     camera_index: int = 0,
@@ -96,6 +93,7 @@ def run_inference(
     device: str = "auto",
     mean: list[float] | tuple[float, ...] | None = None,
     std: list[float] | tuple[float, ...] | None = None,
+    model_type: str | None = None,
 ) -> None:
     """Launch a real-time webcam inference window."""
     # --- Device ---
@@ -110,21 +108,9 @@ def run_inference(
         dev = torch.device(device)
     console.print(f"[bold]Inference device:[/bold] {dev}")
 
-    # --- Model ---
-    model = ResNeXt(
-        layers=list(layers), num_classes=num_classes,
-        groups=groups, width_per_group=width_per_group,
-    ).to(dev)
-
-    ckpt = torch.load(checkpoint_path, map_location=dev, weights_only=False)
-    state = ckpt.get("ema_state_dict", ckpt.get("model_state_dict"))
-    if state is None:
-        raise KeyError("Checkpoint must contain 'ema_state_dict' or 'model_state_dict'")
-    stripped = _strip_compile_prefix(state)
-    model_keys = set(model.state_dict().keys())
-    filtered = {k: v for k, v in stripped.items() if k in model_keys}
-    model.load_state_dict(filtered, strict=True)
-    model.eval()
+    # --- Model (auto-detects ResNeXt vs DeiT from checkpoint) ---
+    model, ckpt = build_model_from_checkpoint(checkpoint_path, dev, model_type=model_type)
+    num_classes = ckpt.get("model_config", {}).get("num_classes", num_classes)
     console.print(f"Loaded checkpoint: [cyan]{checkpoint_path}[/cyan]")
 
     # --- Mean / std: checkpoint > CLI args > fallback 0.5/0.5 ---
