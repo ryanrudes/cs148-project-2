@@ -29,8 +29,9 @@ tracking.
 - **AMP** with `GradScaler` (CUDA-only) and gradient norm clipping
 - **Weights & Biases** integration for experiment tracking and artifact storage
 - **Rich** console output — tables, progress bars and structured logging
-- **HuggingFace Hub** integration for pushing/pulling dataset caches
+- **HuggingFace Hub** integration for pushing/pulling dataset caches and pareidolia test datasets
 - **Webcam inference** with real-time probability visualisation
+- **Pareidolia test generation** — AI-generated OOD images (digits implied by real-world objects) via OpenAI or Gemini
 
 ## Quick start (local)
 
@@ -128,6 +129,33 @@ python -m digit_classifier pull-cache --repo <your-username>/digit-classificatio
 python -m digit_classifier train
 ```
 
+## Pareidolia test dataset
+
+Generate OOD test images where digits 0–9 are implied by real-world objects
+(pareidolia), then push/pull to HuggingFace for use with `--test-dataset`:
+
+```bash
+# Install pareidolia extras (OpenAI, Gemini)
+pip install -e ".[pareidolia]"
+
+# Generate images (Gemini example)
+python -m digit_classifier generate-pareidolia \
+  --provider gemini \
+  --gemini-llm-model gemini-3.1-pro-preview \
+  --image-size 4K \
+  --temperature 0.9 \
+  --per-digit 50
+
+# Push to HuggingFace
+python -m digit_classifier push-test-dataset --repo <username>/pareidolia-test
+
+# Pull on another machine
+python -m digit_classifier pull-test-dataset --repo <username>/pareidolia-test
+
+# Train with test eval
+python -m digit_classifier train --test-dataset dataset_out
+```
+
 ## CLI reference
 
 | Command | Description |
@@ -140,6 +168,9 @@ python -m digit_classifier train
 | `visualize` | Debug-view augmented + mixed-up training batches |
 | `push-cache` | Push dataset caches to a HuggingFace Hub repo |
 | `pull-cache` | Pull dataset caches from a HuggingFace Hub repo |
+| `generate-pareidolia` | Generate AI pareidolia test images (digits implied by real-world objects); requires `[pareidolia]` extra |
+| `push-test-dataset` | Push pareidolia test dataset to HuggingFace Hub |
+| `pull-test-dataset` | Pull pareidolia test dataset from HuggingFace Hub |
 
 Every training hyper-parameter is exposed as a CLI flag with the current
 defaults.  Run `python -m digit_classifier train --help` for the full list.
@@ -163,11 +194,50 @@ src/digit_classifier/
   inference.py         Webcam inference
   visualize.py         Debug batch visualisation
   hub.py               HuggingFace Hub push/pull
+  pareidolia_generate.py  AI pareidolia image generation (LLM + image API)
+  pareidolia_dataset.py   PareidoliaTestDataset loader
 tests/                 pytest test suite
+scripts/               fix_metadata_image_paths, generate_pareidolia_variety, etc.
 ```
 
 ## Running tests
 
 ```bash
 pytest
+```
+
+## Training notes
+
+Configuration for longer training runs and DeiT tiny experiments. DropPath rates
+by model size: tiny/small = 0.0, base = 0.1, large = 0.4, huge = 0.5.
+
+For longer training, use `--epochs 800`, `--weight-decay 0.05`,
+`--drop-path-increment 0.05`, `--drop-path-increment-every 200`.
+
+```bash
+python -m digit_classifier train \
+  --deit-model tiny \
+  --warmup-epochs 5 \
+  --epochs 400 \
+  --batch-size 256 \
+  --lr 3e-4 \
+  --eta-min 1e-5 \
+  --grad-clip-norm 1.0 \
+  --weight-decay 0.02 \
+  --drop-path-rate 0.0 \
+  --layer-decay 0.0 \
+  --mixup-prob 0.5 \
+  --mixup-alpha 0.8 \
+  --cutmix-alpha 1.0 \
+  --bce-loss \
+  --label-smoothing 0.0 \
+  --repeat-aug \
+  --repeat-aug-repeats 3 \
+  --layer-scale-init 1e-6 \
+  --mixup-off-last-n 0 \
+  --flash-attention \
+  --no-ema \
+  --no-amp \
+  --no-warm-restarts \
+  --no-compile
 ```

@@ -162,12 +162,40 @@ def get_digit_hint(digit: int) -> str:
     return f"The digit {digit} shape: {variation}."
 
 
-def sample_formation_type() -> str:
-    """Sample whether the digit should be formed by continuous strokes or discrete objects."""
-    return random.choice([
-        "continuous stroke or line (cable, wire, tape, rope, hose, liquid trail, paint ribbon, etc.)",
-        "discrete objects arranged in positions (pills, mugs, coins, candies, stones, books, fruit, toys, Lego bricks, tools, etc.)",
+def _sample_discrete_params() -> str:
+    """Sample object count, variety, and spacing for discrete formations."""
+    count = random.choice([
+        "3–5 objects",
+        "5–8 objects",
+        "8–12 objects",
     ])
+    variety = random.choice([
+        "single type (e.g. all coins, all pills, all mugs)",
+        "mixed types (2–3 kinds, e.g. pills and coins, or mugs and fruit)",
+    ])
+    spacing = random.choice([
+        "tightly clustered",
+        "loosely spaced",
+        "varied (some tight, some loose)",
+    ])
+    return f"{count}, {variety}, {spacing}"
+
+
+def sample_formation_type() -> str:
+    """Sample formation type: continuous (varied) or discrete (with randomized params)."""
+    if random.random() < 0.5:
+        # Continuous
+        return random.choice([
+            "continuous stroke: folded fabric, paper crease, bent metal sheet, rust streak, or paint line—NOT cables, wires, rope, or hose",
+            "continuous stroke: shadow, crack, groove, or similar (e.g. shadow on wall, crack in pavement, groove in wood)",
+            "continuous stroke: cable, wire, tape, rope, hose, liquid trail, or paint ribbon",
+        ])
+    # Discrete: randomize object count, variety, spacing
+    params = _sample_discrete_params()
+    return (
+        f"discrete objects: {params}; e.g. pills, mugs, coins, candies, stones, books, fruit, toys, Lego bricks, tools; "
+        "AVOID cables, wires, rope, hose, tape, liquid trails"
+    )
 
 
 def _format_llm_prompt(digit: int) -> str:
