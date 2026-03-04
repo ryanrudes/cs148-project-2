@@ -93,6 +93,7 @@ class TrainingConfig:
     compile_model: bool = True
     wandb_enabled: bool = True
     wandb_project: str = "CS148-MNIST"
+    replace_best_checkpoint: bool = True  # overwrite best.pt / model-best artifact instead of accumulating
 
 
 @dataclass

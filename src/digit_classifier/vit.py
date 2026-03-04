@@ -418,3 +418,14 @@ def build_deit3(
         use_flash_attention=use_flash_attention,
         init_values=init_values,
     )
+
+if __name__ == "__main__":
+    model_sizes = ["tiny", "small", "base", "large", "huge"]
+    for model_size in model_sizes:
+        model = build_deit3(model_size, num_classes=10, init_values=1e-6)
+        total_params = sum(p.numel() for p in model.parameters())
+        hidden_size = model.config.hidden_size
+        depth = model.config.depth
+        num_heads = model.config.num_heads
+        mlp_ratio = model.config.mlp_ratio
+        print(f"{model_size}: {hidden_size}, {depth}, {num_heads}, {mlp_ratio}, {total_params}")

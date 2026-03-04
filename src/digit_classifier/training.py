@@ -580,6 +580,9 @@ def train(cfg: Config) -> None:
         checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
         os.makedirs(checkpoint_dir, exist_ok=True)
         wandb.config.update({"mean": mean, "std": std})
+    else:
+        checkpoint_dir = "checkpoints/local"
+        os.makedirs(checkpoint_dir, exist_ok=True)
 
     # --- Training loop ---
     best_val_accuracy = 0.0
@@ -666,7 +669,7 @@ def train(cfg: Config) -> None:
 
         # --- Best-model checkpoint ---
         val_accuracy = val_metrics_ema["accuracy"]
-        if tc.wandb_enabled and val_accuracy > best_val_accuracy:
+        if val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
             ckpt_path = os.path.join(checkpoint_dir, "best.pt")
             save_dict = {
@@ -679,10 +682,23 @@ def train(cfg: Config) -> None:
                 save_dict["ema_state_dict"] = ema.state_dict()
             torch.save(save_dict, ckpt_path)
 
-            art = wandb.Artifact("model-best", type="model",
-                                 metadata={"epoch": epoch + 1, "val_accuracy": val_accuracy})
-            art.add_file(ckpt_path)
-            wandb.log_artifact(art)
+            if tc.wandb_enabled:
+                art_name = f"model-best-{wandb.run.id}"
+                if tc.replace_best_checkpoint:
+                    try:
+                        api = wandb.Api()
+                        prev = api.artifact(
+                            f"{wandb.run.entity}/{wandb.run.project}/{art_name}:best",
+                            type="model",
+                        )
+                        prev.delete(delete_aliases=True)
+                    except Exception:
+                        pass  # no previous artifact or not found
+                art = wandb.Artifact(art_name, type="model",
+                                     metadata={"epoch": epoch + 1, "val_accuracy": val_accuracy})
+                art.add_file(ckpt_path)
+                wandb.log_artifact(art, aliases=["best"])
+
             console.print(f"[green]Saved best model (val_accuracy={val_accuracy:.4f}) at epoch {epoch + 1}[/green]")
 
     if tc.wandb_enabled:
