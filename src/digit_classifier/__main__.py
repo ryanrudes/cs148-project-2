@@ -203,6 +203,18 @@ def _handle_pull_test_dataset(args: argparse.Namespace) -> None:
     pull_test_dataset(repo_id=args.repo, dataset_dir=args.dataset_dir)
 
 
+def _handle_eval(args: argparse.Namespace) -> None:
+    from digit_classifier.training import run_eval
+    run_eval(
+        checkpoint_path=args.checkpoint,
+        test_dataset_path=args.test_dataset,
+        dataset_name=args.dataset,
+        image_size=args.size,
+        batch_size=args.batch_size,
+        device=args.device,
+    )
+
+
 def _handle_generate_pareidolia(args: argparse.Namespace) -> None:
     try:
         from digit_classifier.pareidolia_generate import run, list_resolution_options
@@ -244,11 +256,24 @@ def _handle_generate_pareidolia(args: argparse.Namespace) -> None:
 
 def _handle_visualize(args: argparse.Namespace) -> None:
     cfg = Config(
-        data=DataConfig(dataset_name=args.dataset, image_size=args.size, color=args.color),
+        data=DataConfig(
+            dataset_name=args.dataset,
+            image_size=args.size,
+            color=args.color,
+            batch_size=args.batch_size,
+            repeat_aug=args.repeat_aug,
+            repeat_aug_repeats=args.repeat_aug_repeats,
+            primary_fraction=args.primary_fraction,
+            mix_external=args.mix_external,
+            train_fraction=args.train_fraction,
+            split_seed=args.seed,
+        ),
         model=ModelConfig(num_classes=args.num_classes),
         training=TrainingConfig(
             mixup_alpha=args.mixup_alpha,
             cutmix_alpha=args.cutmix_alpha,
+            mixup_prob=args.mixup_prob,
+            mixup_mode=args.mixup_mode,
         ),
     )
     from digit_classifier.visualize import visualize_batches
@@ -412,6 +437,15 @@ def _build_parser() -> argparse.ArgumentParser:
     pld.add_argument("--repo", required=True, help="HuggingFace repo id (e.g. user/pareidolia-test)")
     pld.add_argument("--dataset-dir", default="dataset_out", help="Local directory to download into")
 
+    # --- eval ---
+    ev = sub.add_parser("eval", help="Evaluate checkpoint (EMA) on pareidolia test dataset")
+    ev.add_argument("--checkpoint", required=True, help="Path to checkpoint (e.g. checkpoints/resnext.pt)")
+    ev.add_argument("--test-dataset", required=True, help="Pareidolia test dir (e.g. dataset_out)")
+    ev.add_argument("--dataset", default="mnist_rgb_224", help="Cached dataset name for mean/std (default: mnist_rgb_224)")
+    ev.add_argument("--size", type=int, default=224, help="Image size (default: 224)")
+    ev.add_argument("--batch-size", type=int, default=128)
+    ev.add_argument("--device", default="auto")
+
     # --- generate-pareidolia ---
     gp = sub.add_parser(
         "generate-pareidolia",
@@ -473,8 +507,21 @@ def _build_parser() -> argparse.ArgumentParser:
     viz.add_argument("--color", action="store_true", default=True)
     viz.add_argument("--num-classes", type=int, default=10)
     viz.add_argument("--num-batches", type=int, default=1)
+    viz.add_argument("--batch-size", type=int, default=128)
+    viz.add_argument("--repeat-aug", action="store_true",
+                     help="Enable repeated augmentation (same as train --repeat-aug)")
+    viz.add_argument("--repeat-aug-repeats", type=int, default=3,
+                     help="Repeats per sample when using repeated augmentation")
+    viz.add_argument("--primary-fraction", type=float, default=0.95,
+                     help="Fraction of batch from primary dataset when mixing external")
+    viz.add_argument("--no-external", dest="mix_external", action="store_false", default=True,
+                     help="Disable external dataset mixing")
+    viz.add_argument("--train-fraction", type=float, default=0.9)
+    viz.add_argument("--seed", type=int, default=42)
     viz.add_argument("--mixup-alpha", type=float, default=0.2)
     viz.add_argument("--cutmix-alpha", type=float, default=1.0)
+    viz.add_argument("--mixup-prob", type=float, default=0.5)
+    viz.add_argument("--mixup-mode", default="elem")
 
     return parser
 
@@ -502,6 +549,7 @@ def main() -> None:
         "pull-cache": _handle_pull_cache,
         "push-test-dataset": _handle_push_test_dataset,
         "pull-test-dataset": _handle_pull_test_dataset,
+        "eval": _handle_eval,
         "generate-pareidolia": _handle_generate_pareidolia,
         "visualize": _handle_visualize,
     }

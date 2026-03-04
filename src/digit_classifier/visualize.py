@@ -45,6 +45,8 @@ def visualize_batches(cfg: Config, num_batches: int = 1) -> None:
     train_loader, _, _ = _create_dataloaders(
         train_dataset, train_dataset, cfg.data.batch_size,
         cfg.data.primary_fraction, device,
+        repeat_aug=cfg.data.repeat_aug,
+        repeat_aug_repeats=cfg.data.repeat_aug_repeats,
     )
 
     tc = cfg.training

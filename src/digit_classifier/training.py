@@ -261,6 +261,54 @@ def build_model_from_checkpoint(
     return model, ckpt
 
 
+def run_eval(
+    checkpoint_path: str,
+    test_dataset_path: str,
+    *,
+    dataset_name: str = "mnist_rgb_224",
+    image_size: int = 224,
+    batch_size: int = 128,
+    device: str = "auto",
+) -> dict[str, float]:
+    """Evaluate a checkpoint (EMA model) on the pareidolia test dataset."""
+    if device == "auto":
+        dev, _ = _detect_device()
+    else:
+        dev = torch.device(device)
+
+    model, ckpt = build_model_from_checkpoint(checkpoint_path, dev)
+    num_classes = ckpt.get("model_config", {}).get("num_classes", 10)
+
+    # Load mean/std from cached dataset (must match training normalization)
+    npz_path = os.path.join("datasets", dataset_name + ".npz")
+    if os.path.exists(npz_path):
+        data = np.load(npz_path)
+        mean = tuple(data["mean"]) if "mean" in data else (0.5, 0.5, 0.5)
+        std = tuple(data["std"]) if "std" in data else (0.5, 0.5, 0.5)
+    else:
+        mean, std = (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
+        console.print("[yellow]No cached dataset found; using mean=0.5, std=0.5. Pass --dataset to match training.[/yellow]")
+
+    from digit_classifier.pareidolia_dataset import PareidoliaTestDataset
+    test_dataset = PareidoliaTestDataset(
+        root_dir=test_dataset_path,
+        color=True,
+        size=image_size,
+        mean=mean,
+        std=std,
+    )
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+
+    metrics = _build_metrics(num_classes, dev)
+    criterion = nn.CrossEntropyLoss()
+    results = validate(model, test_loader, criterion, metrics, dev, use_amp=(dev.type == "cuda"))
+
+    console.print(f"[bold]Eval on {test_dataset_path}[/bold] ({len(test_dataset)} samples)")
+    for k, v in results.items():
+        console.print(f"  {k}: {v:.5f}")
+    return results
+
+
 def compute_warm_restart_epochs(
     warmup_epochs: int,
     t0: int,
