@@ -81,7 +81,7 @@ class TrainingConfig:
     warm_restarts: bool = True
     mixup_alpha: float = 0.2
     cutmix_alpha: float = 1.0
-    cutmix_minmax: tuple[float, float] = (0.02, 0.45)
+    cutmix_minmax: tuple[float, float] | None = (0.02, 0.45)  # None = DeiT-III style (standard CutMix)
     mixup_prob: float = 0.5
     mixup_mode: str = "elem"
     label_smoothing: float = 0.1

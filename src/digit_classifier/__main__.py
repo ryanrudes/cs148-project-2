@@ -84,6 +84,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             warm_restarts=not args.no_warm_restarts,
             mixup_alpha=args.mixup_alpha,
             cutmix_alpha=args.cutmix_alpha,
+            cutmix_minmax=None if args.no_cutmix_minmax else (0.02, 0.45),
             mixup_prob=args.mixup_prob,
             mixup_mode=args.mixup_mode,
             label_smoothing=args.label_smoothing,
@@ -274,6 +275,7 @@ def _handle_visualize(args: argparse.Namespace) -> None:
         training=TrainingConfig(
             mixup_alpha=args.mixup_alpha,
             cutmix_alpha=args.cutmix_alpha,
+            cutmix_minmax=None if args.no_cutmix_minmax else (0.02, 0.45),
             mixup_prob=args.mixup_prob,
             mixup_mode=args.mixup_mode,
         ),
@@ -357,6 +359,8 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--ema-decay", type=float, default=0.995)
     tr.add_argument("--mixup-alpha", type=float, default=0.2)
     tr.add_argument("--cutmix-alpha", type=float, default=1.0)
+    tr.add_argument("--no-cutmix-minmax", action="store_true",
+                    help="Use standard CutMix (DeiT-III style) instead of minmax bbox sampling")
     tr.add_argument("--mixup-prob", type=float, default=0.5)
     tr.add_argument("--mixup-mode", default="elem")
     tr.add_argument("--label-smoothing", type=float, default=0.1)
@@ -528,6 +532,8 @@ def _build_parser() -> argparse.ArgumentParser:
     viz.add_argument("--seed", type=int, default=42)
     viz.add_argument("--mixup-alpha", type=float, default=0.2)
     viz.add_argument("--cutmix-alpha", type=float, default=1.0)
+    viz.add_argument("--no-cutmix-minmax", action="store_true",
+                     help="Use standard CutMix (DeiT-III style) instead of minmax bbox sampling")
     viz.add_argument("--mixup-prob", type=float, default=0.5)
     viz.add_argument("--mixup-mode", default="elem")
 
