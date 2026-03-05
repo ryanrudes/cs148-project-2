@@ -97,6 +97,7 @@ class TrainingConfig:
     wandb_enabled: bool = True
     wandb_project: str = "CS148-MNIST"
     replace_best_checkpoint: bool = True  # overwrite best.pt / model-best artifact instead of accumulating
+    checkpoint_enabled: bool = True  # when False, no checkpoints are saved to disk or wandb
 
 
 @dataclass

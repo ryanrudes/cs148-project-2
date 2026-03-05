@@ -100,6 +100,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             wandb_enabled=not args.no_wandb,
             wandb_project=args.wandb_project,
             replace_best_checkpoint=args.replace_best_checkpoint,
+            checkpoint_enabled=not args.no_checkpoint,
         ),
     )
     from digit_classifier.training import train
@@ -380,6 +381,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Disable mixed precision (autocast); use float32 for stability")
     tr.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
     tr.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    tr.add_argument("--no-checkpoint", action="store_true",
+                    help="Disable saving checkpoints to disk and wandb")
     tr.add_argument("--replace-best-checkpoint", action="store_true", default=True,
                     help="Overwrite best checkpoint on disk and wandb (default)")
     tr.add_argument("--accumulate-best-checkpoints", dest="replace_best_checkpoint", action="store_false",

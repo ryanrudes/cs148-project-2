@@ -731,12 +731,14 @@ def train(cfg: Config) -> None:
             wandb_config.update({"deit_model": mc.deit_model})
         wandb.init(project=tc.wandb_project, config=wandb_config)
         wandb.watch(model, log="gradients", log_freq=100)
-        checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
-        os.makedirs(checkpoint_dir, exist_ok=True)
+        if tc.checkpoint_enabled:
+            checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
+            os.makedirs(checkpoint_dir, exist_ok=True)
         wandb.config.update({"mean": mean, "std": std})
     else:
-        checkpoint_dir = "checkpoints/local"
-        os.makedirs(checkpoint_dir, exist_ok=True)
+        if tc.checkpoint_enabled:
+            checkpoint_dir = "checkpoints/local"
+            os.makedirs(checkpoint_dir, exist_ok=True)
 
     # --- Training loop ---
     best_val_accuracy = 0.0
@@ -789,7 +791,7 @@ def train(cfg: Config) -> None:
             )
 
         # --- Pre-restart checkpoint (before scheduler.step) ---
-        if warm_restart_epochs and (epoch + 1) in warm_restart_epochs:
+        if tc.checkpoint_enabled and warm_restart_epochs and (epoch + 1) in warm_restart_epochs:
             ckpt_root = checkpoint_dir if "checkpoint_dir" in dir() else "checkpoints"
             os.makedirs(ckpt_root, exist_ok=True)
             pre_path = os.path.join(ckpt_root, f"pre_restart_epoch_{epoch + 1}.pt")
@@ -840,37 +842,38 @@ def train(cfg: Config) -> None:
         val_accuracy = val_metrics_ema["accuracy"]
         if val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
-            ckpt_path = os.path.join(checkpoint_dir, "best.pt")
-            save_dict = {
-                "epoch": epoch + 1,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_accuracy": val_accuracy,
-                "model_type": mc.model_type,
-                "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
-            }
-            if ema is not None:
-                save_dict["ema_state_dict"] = ema.state_dict()
-            torch.save(save_dict, ckpt_path)
+            if tc.checkpoint_enabled:
+                ckpt_path = os.path.join(checkpoint_dir, "best.pt")
+                save_dict = {
+                    "epoch": epoch + 1,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_accuracy": val_accuracy,
+                    "model_type": mc.model_type,
+                    "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
+                }
+                if ema is not None:
+                    save_dict["ema_state_dict"] = ema.state_dict()
+                torch.save(save_dict, ckpt_path)
 
-            if tc.wandb_enabled:
-                art_name = f"model-best-{wandb.run.id}"
-                if tc.replace_best_checkpoint:
-                    try:
-                        api = wandb.Api()
-                        prev = api.artifact(
-                            f"{wandb.run.entity}/{wandb.run.project}/{art_name}:best",
-                            type="model",
-                        )
-                        prev.delete(delete_aliases=True)
-                    except Exception:
-                        pass  # no previous artifact or not found
-                art = wandb.Artifact(art_name, type="model",
-                                     metadata={"epoch": epoch + 1, "val_accuracy": val_accuracy})
-                art.add_file(ckpt_path)
-                wandb.log_artifact(art, aliases=["best"])
+                if tc.wandb_enabled:
+                    art_name = f"model-best-{wandb.run.id}"
+                    if tc.replace_best_checkpoint:
+                        try:
+                            api = wandb.Api()
+                            prev = api.artifact(
+                                f"{wandb.run.entity}/{wandb.run.project}/{art_name}:best",
+                                type="model",
+                            )
+                            prev.delete(delete_aliases=True)
+                        except Exception:
+                            pass  # no previous artifact or not found
+                    art = wandb.Artifact(art_name, type="model",
+                                         metadata={"epoch": epoch + 1, "val_accuracy": val_accuracy})
+                    art.add_file(ckpt_path)
+                    wandb.log_artifact(art, aliases=["best"])
 
-            console.print(f"[green]Saved best model (val_accuracy={val_accuracy:.4f}) at epoch {epoch + 1}[/green]")
+                console.print(f"[green]Saved best model (val_accuracy={val_accuracy:.4f}) at epoch {epoch + 1}[/green]")
 
     if tc.wandb_enabled:
         wandb.finish()
