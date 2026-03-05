@@ -596,6 +596,7 @@ def train(cfg: Config) -> None:
         size=cfg.data.image_size,
         seed=cfg.data.split_seed,
         augment_cfg=cfg.augment,
+        augment_scheme=cfg.data.augment_scheme,
     )
     console.print(f"Train: {len(train_dataset)} samples, Val: {len(val_dataset)} samples")
 

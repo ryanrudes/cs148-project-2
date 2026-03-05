@@ -57,6 +57,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             mix_external=args.mix_external,
             primary_fraction=args.primary_fraction,
             test_dataset_path=args.test_dataset,
+            augment_scheme=args.augment_scheme,
         ),
         model=ModelConfig(
             model_type=args.model_type,
@@ -267,6 +268,7 @@ def _handle_visualize(args: argparse.Namespace) -> None:
             mix_external=args.mix_external,
             train_fraction=args.train_fraction,
             split_seed=args.seed,
+            augment_scheme=args.augment_scheme,
         ),
         model=ModelConfig(num_classes=args.num_classes),
         training=TrainingConfig(
@@ -324,6 +326,9 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--primary-fraction", type=float, default=0.95)
     tr.add_argument("--test-dataset", type=str, default=None,
                     help="Pareidolia output dir (e.g. dataset_out) for test evaluation; no augmentation")
+    tr.add_argument("--augment-scheme", default="yolo",
+                    choices=["yolo", "three_augment", "autoaugment"],
+                    help="Augmentation pipeline: yolo (default), three_augment (DeiT-III), autoaugment (SVHN)")
     # Model
     tr.add_argument("--model", dest="model_type", type=str, default="deit",
                     choices=["resnext", "deit"],
@@ -503,6 +508,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- visualize ---
     viz = sub.add_parser("visualize", help="Visualise augmented training batches")
     viz.add_argument("--dataset", default="mnist_rgb_224")
+    viz.add_argument("--augment-scheme", default="yolo",
+                     choices=["yolo", "three_augment", "autoaugment"],
+                     help="Augmentation pipeline to visualise")
     viz.add_argument("--size", type=int, default=224)
     viz.add_argument("--color", action="store_true", default=True)
     viz.add_argument("--num-classes", type=int, default=10)

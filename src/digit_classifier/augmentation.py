@@ -1,6 +1,6 @@
-"""YOLO-style augmentation pipeline with digit-safe hyper-parameters.
+"""Augmentation pipelines: YOLO-style, 3-Augment (DeiT-III), and AutoAugment SVHN.
 
-Images entering this pipeline are tensors of shape ``(C, H, W)`` in [0, 1]
+Images entering these pipelines are tensors of shape ``(C, H, W)`` in [0, 1]
 that have already been resized and colour-converted by the deterministic
 preprocessor (see :func:`get_preprocessor`).
 
@@ -16,9 +16,12 @@ from typing import Any
 import torch
 from torch import Tensor
 from torchvision import transforms as TV1
+from torchvision.transforms import AutoAugment, AutoAugmentPolicy
 from torchvision.transforms import functional as F
 from torchvision.transforms import v2 as T
 from ultralytics.data.augment import classify_augmentations
+
+from digit_classifier.config import AugmentConfig
 
 
 # Digits that are symmetric under horizontal flip.
@@ -241,7 +244,7 @@ def build_yolo_augmentor(
     mean: tuple[float, ...] | None = None,
     std: tuple[float, ...] | None = None,
     size: int | None = None,
-    cfg: "AugmentConfig | None" = None,
+    cfg: AugmentConfig | None = None,
 ) -> YOLOAugment:
     """Convenience factory with digit-safe defaults.
 
@@ -260,3 +263,170 @@ def build_yolo_augmentor(
         fliplr=0.5, erasing=0.1, scale=0.2, degrees=15.0, shear=4.0,
         translate=0.15, mean=mean, std=std, size=size,
     )
+
+
+# ---------------------------------------------------------------------------
+# 3-Augment (DeiT-III): grayscale / solarize / gaussian blur → color jitter → hflip
+#
+# Matches the official DeiT implementation (facebookresearch/deit augment.py) and
+# timm's auto_augment_policy_3a (timm/data/auto_augment.py). References:
+#   - https://github.com/facebookresearch/deit/blob/main/augment.py
+#   - https://github.com/huggingface/pytorch-image-models/blob/main/timm/data/auto_augment.py
+# ---------------------------------------------------------------------------
+
+# PIL ImageOps.solarize uses threshold=128 by default; for float [0,1] that is 128/255
+_SOLARIZE_THRESHOLD_DEIT = 128 / 255.0
+
+# DeiT main.py --color-jitter default is 0.3 (brightness, contrast, saturation; no hue)
+_COLOR_JITTER_DEIT = (0.3, 0.3, 0.3, 0.0)
+
+# GaussianBlur: DeiT uses radius in [0.1, 2.0]; we use sigma in same range for torchvision
+_BLUR_SIGMA_DEIT = (0.1, 2.0)
+
+
+class _ThreeAugmentRandom:
+    """Apply one of grayscale, solarize, or gaussian blur with equal probability.
+
+    Matches DeiT's RandomChoice([gray_scale(p=1), Solarization(p=1), GaussianBlur(p=1)]).
+    """
+
+    def __init__(
+        self,
+        solarize_threshold: float = _SOLARIZE_THRESHOLD_DEIT,
+        blur_kernel_size: int = 23,
+        blur_sigma: tuple[float, float] = _BLUR_SIGMA_DEIT,
+    ) -> None:
+        self._grayscale = T.RandomGrayscale(p=1.0)
+        self._solarize = T.RandomSolarize(threshold=solarize_threshold, p=1.0)
+        self._blur = T.GaussianBlur(kernel_size=blur_kernel_size, sigma=blur_sigma)
+
+    def __call__(self, x: Tensor) -> Tensor:
+        r = random.random()
+        if r < 1 / 3:
+            return self._grayscale(x)
+        if r < 2 / 3:
+            return self._solarize(x)
+        return self._blur(x)
+
+
+class ThreeAugment:
+    """3-Augment pipeline from DeiT-III: random aug → color jitter → label-conditional hflip.
+
+    Exact match for the official DeiT augment.py and timm's 3a policy. Order per paper:
+    one of (grayscale, solarize, gaussian blur) → color jitter → horizontal flip.
+
+    The callable signature is ``(image, label) -> image`` for :class:`DigitDataset`.
+    """
+
+    def __init__(
+        self,
+        *,
+        fliplr: float = 0.5,
+        color_jitter: tuple[float, float, float, float] = _COLOR_JITTER_DEIT,
+        solarize_threshold: float = _SOLARIZE_THRESHOLD_DEIT,
+        blur_sigma: tuple[float, float] = _BLUR_SIGMA_DEIT,
+        mean: tuple[float, ...] | None = None,
+        std: tuple[float, ...] | None = None,
+    ) -> None:
+        self._conditional_hflip = _LabelConditionalHFlip(p=fliplr)
+        self._random_aug = _ThreeAugmentRandom(
+            solarize_threshold=solarize_threshold,
+            blur_sigma=blur_sigma,
+        )
+        self._color_jitter = T.ColorJitter(*color_jitter)
+        if mean is None or std is None:
+            mean = (0.5, 0.5, 0.5)
+            std = (0.5, 0.5, 0.5)
+        self._norm_rgb = T.Normalize(mean=tuple(mean), std=tuple(std))
+        self._norm_gray = T.Normalize(mean=(float(mean[0]),), std=(float(std[0]),))
+
+    def __call__(self, img: Tensor, label: int | None = None) -> Tensor:
+        img = self._random_aug(img)
+        img = self._color_jitter(img)
+        if label is not None:
+            img = self._conditional_hflip(img, label)
+        norm = self._norm_rgb if img.shape[0] == 3 else self._norm_gray
+        return norm(img)
+
+
+# ---------------------------------------------------------------------------
+# AutoAugment SVHN policy (torchvision)
+# ---------------------------------------------------------------------------
+
+class AutoAugmentTransform:
+    """AutoAugment with SVHN policy, wrapped for (image, label) -> image.
+
+    Expects float [0, 1] input; converts to uint8 for AutoAugment, then back.
+    """
+
+    def __init__(
+        self,
+        *,
+        fliplr: float = 0.5,
+        mean: tuple[float, ...] | None = None,
+        std: tuple[float, ...] | None = None,
+    ) -> None:
+        self._autoaugment = AutoAugment(policy=AutoAugmentPolicy.SVHN)
+        self._conditional_hflip = _LabelConditionalHFlip(p=fliplr)
+        if mean is None or std is None:
+            mean = (0.5, 0.5, 0.5)
+            std = (0.5, 0.5, 0.5)
+        self._norm_rgb = T.Normalize(mean=tuple(mean), std=tuple(std))
+        self._norm_gray = T.Normalize(mean=(float(mean[0]),), std=(float(std[0]),))
+
+    def __call__(self, img: Tensor, label: int | None = None) -> Tensor:
+        # AutoAugment expects uint8 [0, 255]
+        img_uint8 = (img.clamp(0, 1) * 255).to(torch.uint8)
+        img_uint8 = self._autoaugment(img_uint8)
+        img = img_uint8.to(torch.float32) / 255.0
+        if label is not None:
+            img = self._conditional_hflip(img, label)
+        norm = self._norm_rgb if img.shape[0] == 3 else self._norm_gray
+        return norm(img)
+
+
+# ---------------------------------------------------------------------------
+# Augmentor factory
+# ---------------------------------------------------------------------------
+
+AUGMENT_SCHEMES: frozenset[str] = frozenset({"yolo", "three_augment", "autoaugment"})
+
+
+def build_augmentor(
+    scheme: str,
+    mean: tuple[float, ...] | None = None,
+    std: tuple[float, ...] | None = None,
+    size: int | None = None,
+    cfg: AugmentConfig | None = None,
+) -> YOLOAugment | ThreeAugment | AutoAugmentTransform:
+    """Build an augmentor by scheme name.
+
+    Parameters
+    ----------
+    scheme : str
+        One of ``"yolo"``, ``"three_augment"``, ``"autoaugment"``.
+    mean, std : tuple[float, ...] | None
+        Normalisation statistics.
+    size : int | None
+        Target size (used by YOLO for RandomResizedCrop).
+    cfg : AugmentConfig | None
+        Augment config (used by YOLO for fliplr etc.).
+
+    Returns
+    -------
+    YOLOAugment | ThreeAugment | AutoAugmentTransform
+        Callable with signature ``(image, label) -> image``.
+    """
+    scheme = scheme.lower().strip()
+    if scheme not in AUGMENT_SCHEMES:
+        raise ValueError(f"Unknown augment_scheme: {scheme!r}. Choose from {sorted(AUGMENT_SCHEMES)}")
+
+    if scheme == "yolo":
+        return build_yolo_augmentor(mean=mean, std=std, size=size, cfg=cfg)
+    if scheme == "three_augment":
+        fliplr = cfg.fliplr if cfg is not None else 0.5
+        return ThreeAugment(fliplr=fliplr, mean=mean, std=std)
+    if scheme == "autoaugment":
+        fliplr = cfg.fliplr if cfg is not None else 0.5
+        return AutoAugmentTransform(fliplr=fliplr, mean=mean, std=std)
+    raise AssertionError(f"Unhandled scheme: {scheme}")

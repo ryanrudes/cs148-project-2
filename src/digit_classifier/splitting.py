@@ -36,7 +36,7 @@ from torch import Tensor
 from torch.utils.data import ConcatDataset, DataLoader
 from torchvision.transforms import v2 as T
 
-from digit_classifier.augmentation import ApplyTransform, build_yolo_augmentor
+from digit_classifier.augmentation import ApplyTransform, build_augmentor
 from digit_classifier.config import AugmentConfig
 from digit_classifier.dataset import DigitDataset
 
@@ -134,6 +134,7 @@ def split_dataset(
     size: int = 224,
     seed: int = 42,
     augment_cfg: AugmentConfig | None = None,
+    augment_scheme: str = "yolo",
 ) -> tuple[ConcatDataset | DigitDataset, DigitDataset, tuple[float, ...], tuple[float, ...]]:
     """Split *images* / *labels* into train and validation sets.
 
@@ -270,7 +271,13 @@ def split_dataset(
     train_orig_dataset = DigitDataset(
         images=train_images,
         labels=train_labels,
-        transform=build_yolo_augmentor(mean=mean_t, std=std_t, size=size, cfg=augment_cfg),
+        transform=build_augmentor(
+            augment_scheme,
+            mean=mean_t,
+            std=std_t,
+            size=size,
+            cfg=augment_cfg,
+        ),
     )
 
     if has_externals:

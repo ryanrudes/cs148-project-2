@@ -17,6 +17,7 @@ class DataConfig:
     dataset_name: str = "mnist_rgb_224"
     image_size: int = 224
     color: bool = True
+    augment_scheme: str = "yolo"  # "yolo" | "three_augment" | "autoaugment"
     train_fraction: float = 0.9
     batch_size: int = 128
     repeat_aug: bool = False
