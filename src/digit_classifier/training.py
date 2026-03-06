@@ -1272,6 +1272,7 @@ def train(cfg: Config) -> None:
     if world_size > 1:
         import torch.distributed as dist
         if device.type == "cuda":
+            torch.cuda.set_device(local_rank)
             torch.cuda.synchronize()
         dist.barrier()
         console.print(f"[dim]Rank {rank}/{world_size}: barrier passed, wrapping DDP…[/dim]")
