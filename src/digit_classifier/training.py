@@ -876,7 +876,7 @@ def train(cfg: Config) -> None:
             external_cache_max_mb=external_cache_max_mb if use_cache_for_build else 0,
             num_workers=num_workers,
         )
-    console.print(f"Train: {len(train_dataset)} samples, Val: {len(val_dataset)} samples")
+    train_val_msg = f"Train: {len(train_dataset)} samples, Val: {len(val_dataset)} samples"
 
     if cfg.data.calibrate_workers:
         num_workers = _calibrate_num_workers_on_dataset(
@@ -911,6 +911,8 @@ def train(cfg: Config) -> None:
             f"Test (pareidolia): {len(test_dataset)} samples (no augmentation)"
             + (f", skipped {test_dataset.skipped} missing" if test_dataset.skipped else "")
         )
+        train_val_msg += f", Test: {len(test_dataset)} samples"
+    console.print(train_val_msg)
 
     train_loader, val_loader, test_loader = _create_dataloaders(
         train_dataset, val_dataset, cfg.data.batch_size,
