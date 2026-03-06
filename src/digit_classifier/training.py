@@ -1431,7 +1431,8 @@ def train(cfg: Config) -> None:
     if warm_restart_epochs and rank == 0:
         console.print(f"[bold]Warm-restart epochs:[/bold] {warm_restart_epochs}")
 
-    if resume_ckpt is not None:
+    # Only restore optimizer/scheduler for --resume (same architecture). --pretrain loads weights only.
+    if tc.resume_path and resume_ckpt is not None:
         if "optimizer_state_dict" in resume_ckpt:
             try:
                 optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
