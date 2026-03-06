@@ -113,9 +113,15 @@ class RatioBatchSampler:
             yield batch
 
     def __len__(self) -> int:
+        """Number of batches per epoch. Stops when primary is exhausted."""
         if self.drop_last:
-            return self.total_count // self.batch_size
-        return -(-self.total_count // self.batch_size)
+            if self.external_count == 0:
+                return self.total_count // self.batch_size
+            return self.original_count // self.k_primary
+        if self.external_count == 0:
+            return -(-self.total_count // self.batch_size)
+        # Approximate when not drop_last (rare)
+        return -(-self.original_count // self.k_primary)
 
 
 class RepeatAugSampler(Sampler[int]):
@@ -295,14 +301,16 @@ class RepeatAugRatioBatchSampler:
             yield batch
 
     def __len__(self) -> int:
+        """Number of batches per epoch. Stops when primary (repeated) is exhausted."""
         orig_len = self.original_count * self.num_repeats
-        ext_len = self.external_count * self.num_repeats
         if self.drop_last:
             if self.external_count == 0:
                 return orig_len // self.batch_size
-            return min(orig_len // self.k_primary, ext_len // self.k_secondary)
-        total = orig_len + ext_len
-        return -(-total // self.batch_size)
+            return orig_len // self.k_primary
+        if self.external_count == 0:
+            total = orig_len + self.external_count * self.num_repeats
+            return -(-total // self.batch_size)
+        return -(-orig_len // self.k_primary)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch

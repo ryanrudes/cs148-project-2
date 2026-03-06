@@ -21,6 +21,7 @@ class PareidoliaTestDataset(Dataset):
     """Dataset of pareidolia images from metadata.jsonl + images/.
 
     Loads images on demand. Applies only resize + normalize (no augmentation).
+    With preload=True (default), loads all images into memory at init for fast iteration.
     """
 
     def __init__(
@@ -30,6 +31,7 @@ class PareidoliaTestDataset(Dataset):
         size: int = 224,
         mean: tuple[float, ...] = (0.5, 0.5, 0.5),
         std: tuple[float, ...] = (0.5, 0.5, 0.5),
+        preload: bool = True,
     ) -> None:
         self.root = Path(root_dir)
         self.color = color
@@ -63,10 +65,30 @@ class PareidoliaTestDataset(Dataset):
         self.preprocessor = get_preprocessor(color, size)
         self.normalize = T.Normalize(mean=mean, std=std)
 
+        self._preloaded: list[tuple[Tensor, int]] | None = None
+        if preload and self.samples:
+            self._preloaded = []
+            for img_path, label in self.samples:
+                full_path = self.root / img_path
+                img = Image.open(full_path).convert("RGB" if self.color else "L")
+                x = self.preprocessor(img)
+                if isinstance(x, Tensor):
+                    pass
+                else:
+                    import numpy as np
+                    x = torch.from_numpy(x) if hasattr(x, "__array__") else torch.tensor(x)
+                if x.ndim == 3 and x.shape[0] not in (1, 3) and x.shape[-1] in (1, 3):
+                    x = x.permute(2, 0, 1)
+                x = x.to(torch.float32)
+                x = self.normalize(x)
+                self._preloaded.append((x, label))
+
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> tuple[Tensor, int]:
+        if self._preloaded is not None:
+            return self._preloaded[idx]
         img_path, label = self.samples[idx]
         full_path = self.root / img_path
         img = Image.open(full_path).convert("RGB" if self.color else "L")

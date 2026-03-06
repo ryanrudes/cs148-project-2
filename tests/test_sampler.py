@@ -27,14 +27,23 @@ def test_no_external():
 
 
 def test_len_and_drop_last():
+    # With external data, epoch length = original_count // k_primary (primary exhausted first)
     sampler = RatioBatchSampler(
         original_count=5, total_count=13, batch_size=4,
         primary_fraction=0.5, drop_last=True,
     )
-    assert len(sampler) == 13 // 4
+    # k_primary=2, so 5//2 = 2 batches
+    assert len(sampler) == 5 // 2
 
     sampler2 = RatioBatchSampler(
         original_count=5, total_count=13, batch_size=4,
         primary_fraction=0.5, drop_last=False,
     )
-    assert len(sampler2) == -(-13 // 4)
+    assert len(sampler2) == -(-5 // 2)
+
+    # No external: epoch = total // batch_size
+    sampler3 = RatioBatchSampler(
+        original_count=10, total_count=10, batch_size=4,
+        primary_fraction=0.5, drop_last=True,
+    )
+    assert len(sampler3) == 10 // 4
