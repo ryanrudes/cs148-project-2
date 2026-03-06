@@ -1392,7 +1392,8 @@ def train(cfg: Config) -> None:
     if tc.ema_enabled:
         ema_base = model.module if hasattr(model, "module") else model
         ema = AveragedModel(ema_base, multi_avg_fn=get_ema_multi_avg_fn(tc.ema_decay), use_buffers=True)
-        if resume_ckpt is not None and "ema_state_dict" in resume_ckpt:
+        # Only restore EMA for --resume (same architecture). --pretrain would have wrong shapes.
+        if tc.resume_path and resume_ckpt is not None and "ema_state_dict" in resume_ckpt:
             try:
                 ema.load_state_dict(resume_ckpt["ema_state_dict"])
                 if rank == 0:
