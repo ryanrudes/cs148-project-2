@@ -863,7 +863,7 @@ def _profile_compile_modes(
     device: torch.device,
     num_warmup: int = 5,
     num_timed: int = 15,
-) -> str:
+) -> tuple[str, dict[str, float]]:
     """Profile torch.compile modes and return the one with highest throughput."""
     import time
 
@@ -969,7 +969,9 @@ def _profile_compile_modes(
         for mode, tp in results:
             mark = " ← best" if mode == best_mode else ""
             console.print(f"  [dim]{mode}:[/dim] {tp:.0f} samples/s{mark}")
-    return best_mode
+    results_dict = {f"compile_{mode}_samples_per_s": tp for mode, tp in results}
+    results_dict["compile_best_mode"] = best_mode
+    return best_mode, results_dict
 
 
 def _wrap_external_with_cache(
@@ -1270,11 +1272,12 @@ def train(cfg: Config) -> None:
         layer_decay=tc.layer_decay,
     )
 
+    compile_profiling: dict[str, float] | None = None
     if tc.compile_model:
         if tc.compile_mode is not None:
             model = torch.compile(model, mode=tc.compile_mode)
         elif device.type == "cuda" and world_size == 1:
-            best_mode = _profile_compile_modes(
+            best_mode, compile_profiling = _profile_compile_modes(
                 model, train_loader, device, num_warmup=5, num_timed=15
             )
             model = torch.compile(model, mode=best_mode)
@@ -1392,6 +1395,8 @@ def train(cfg: Config) -> None:
             checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
             os.makedirs(checkpoint_dir, exist_ok=True)
         wandb.config.update({"mean": mean, "std": std})
+        if compile_profiling is not None:
+            wandb.config.update(compile_profiling)
     else:
         if tc.checkpoint_enabled and rank == 0:
             checkpoint_dir = "checkpoints/local"
