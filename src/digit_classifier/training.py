@@ -1708,7 +1708,8 @@ def train(cfg: Config) -> None:
         scheduler.step()
 
         # --- Logging ---
-        current_lr = scheduler.get_last_lr()[0]
+        # Log max LR (head/later layers); [0] is embedding which has tiny LR with layer_decay
+        current_lr = max(scheduler.get_last_lr())
         if rank == 0:
             _log_epoch_table(
                 epoch + 1, train_metrics, val_metrics_raw, val_metrics_ema, current_lr,
