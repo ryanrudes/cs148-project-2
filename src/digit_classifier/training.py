@@ -764,13 +764,20 @@ def _calibrate_num_workers_on_dataset(
     """Benchmark different num_workers on the real training dataset and return the best."""
     import time
 
+    try:
+        import torch.distributed as dist
+        is_rank0 = not dist.is_initialized() or dist.get_rank() == 0
+    except Exception:
+        is_rank0 = True
+
     total_samples = len(train_dataset)
     actual_batches = min(num_batches, max(1, total_samples // batch_size))
     if actual_batches < 2:
-        console.print(
-            "[yellow]Worker calibration skipped: dataset too small "
-            f"({total_samples} samples, batch_size {batch_size})[/yellow]"
-        )
+        if is_rank0:
+            console.print(
+                "[yellow]Worker calibration skipped: dataset too small "
+                f"({total_samples} samples, batch_size {batch_size})[/yellow]"
+            )
         return min(16, max(1, cpu_count() - 1))
 
     candidates = [0, 4, 8, 16, 24, 32]
@@ -783,35 +790,66 @@ def _calibrate_num_workers_on_dataset(
     best_throughput = 0.0
     results: list[tuple[int, float]] = []
 
-    for nw in candidates:
-        loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=nw,
-            prefetch_factor=prefetch_factor if nw > 0 else None,
-            drop_last=True,
-            pin_memory=False,
-        )
-        start = time.perf_counter()
-        count = 0
-        for _ in loader:
-            count += 1
-            if count >= actual_batches:
-                break
-        elapsed = time.perf_counter() - start
-        throughput = count * batch_size / elapsed if elapsed > 0 else 0
-        results.append((nw, throughput))
-        if throughput > best_throughput:
-            best_throughput = throughput
-            best_nw = nw
+    if is_rank0:
+        console.print("[bold]Worker calibration (on real data):[/bold] starting…")
+    progress_columns = (
+        TextColumn("[bold blue]Worker calibration[/]"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+    )
+    if is_rank0:
+        with Progress(*progress_columns, console=console) as progress:
+            task = progress.add_task("calibrating", total=len(candidates))
+            for nw in candidates:
+                progress.update(task, description=f"Testing {nw} workers")
+                loader = DataLoader(
+                    train_dataset,
+                    batch_size=batch_size,
+                    shuffle=True,
+                    num_workers=nw,
+                    prefetch_factor=prefetch_factor if nw > 0 else None,
+                    drop_last=True,
+                    pin_memory=False,
+                )
+                start = time.perf_counter()
+                count = 0
+                for _ in loader:
+                    count += 1
+                    if count >= actual_batches:
+                        break
+                elapsed = time.perf_counter() - start
+                throughput = count * batch_size / elapsed if elapsed > 0 else 0
+                results.append((nw, throughput))
+                if throughput > best_throughput:
+                    best_throughput = throughput
+                    best_nw = nw
+                progress.advance(task)
+    else:
+        for nw in candidates:
+            loader = DataLoader(
+                train_dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=nw,
+                prefetch_factor=prefetch_factor if nw > 0 else None,
+                drop_last=True,
+                pin_memory=False,
+            )
+            start = time.perf_counter()
+            count = 0
+            for _ in loader:
+                count += 1
+                if count >= actual_batches:
+                    break
+            elapsed = time.perf_counter() - start
+            throughput = count * batch_size / elapsed if elapsed > 0 else 0
+            results.append((nw, throughput))
+            if throughput > best_throughput:
+                best_throughput = throughput
+                best_nw = nw
 
-    # Only rank 0 prints calibration (all ranks run it for correctness)
-    try:
-        import torch.distributed as dist
-        is_rank0 = not dist.is_initialized() or dist.get_rank() == 0
-    except Exception:
-        is_rank0 = True
     if is_rank0:
         console.print("[bold]Worker calibration (on real data):[/bold]")
         for nw, tp in results:
@@ -830,6 +868,12 @@ def _profile_compile_modes(
     """Profile torch.compile modes and return the one with highest throughput."""
     import time
 
+    try:
+        import torch.distributed as dist
+        is_rank0 = not dist.is_initialized() or dist.get_rank() == 0
+    except Exception:
+        is_rank0 = True
+
     modes = ["default", "reduce-overhead", "max-autotune"]
     batch_size = train_loader.batch_size if hasattr(train_loader, "batch_size") else getattr(
         train_loader.batch_sampler, "batch_size", 128
@@ -844,12 +888,13 @@ def _profile_compile_modes(
     best_throughput = 0.0
     results: list[tuple[str, float]] = []
 
-    for mode in modes:
+    if is_rank0:
+        console.print("[bold]Compile mode profiling:[/bold] starting…")
+    def _profile_one_mode(mode: str) -> float:
         compiled = torch.compile(model, mode=mode)
         compiled.train()
         opt = torch.optim.AdamW(compiled.parameters(), lr=1e-4)
         loader_iter = iter(train_loader)
-        # Warmup
         for _ in range(num_warmup):
             try:
                 images, labels = next(loader_iter)
@@ -869,7 +914,6 @@ def _profile_compile_modes(
             scaler.update()
         if device.type == "cuda":
             torch.cuda.synchronize()
-        # Timed
         loader_iter = iter(train_loader)
         start = time.perf_counter()
         count = 0
@@ -893,17 +937,34 @@ def _profile_compile_modes(
         if device.type == "cuda":
             torch.cuda.synchronize()
         elapsed = time.perf_counter() - start
-        throughput = count * batch_size / elapsed if elapsed > 0 else 0
-        results.append((mode, throughput))
-        if throughput > best_throughput:
-            best_throughput = throughput
-            best_mode = mode
+        return count * batch_size / elapsed if elapsed > 0 else 0.0
 
-    try:
-        import torch.distributed as dist
-        is_rank0 = not dist.is_initialized() or dist.get_rank() == 0
-    except Exception:
-        is_rank0 = True
+    progress_columns = (
+        TextColumn("[bold blue]Compile mode profiling[/]"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+    )
+    if is_rank0:
+        with Progress(*progress_columns, console=console) as progress:
+            task = progress.add_task("profiling", total=len(modes))
+            for mode in modes:
+                progress.update(task, description=f"Profiling {mode}")
+                throughput = _profile_one_mode(mode)
+                results.append((mode, throughput))
+                if throughput > best_throughput:
+                    best_throughput = throughput
+                    best_mode = mode
+                progress.advance(task)
+    else:
+        for mode in modes:
+            throughput = _profile_one_mode(mode)
+            results.append((mode, throughput))
+            if throughput > best_throughput:
+                best_throughput = throughput
+                best_mode = mode
+
     if is_rank0:
         console.print("[bold]Compile mode profiling:[/bold]")
         for mode, tp in results:
