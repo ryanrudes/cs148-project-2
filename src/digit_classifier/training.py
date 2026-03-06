@@ -1545,14 +1545,38 @@ def train(cfg: Config) -> None:
                 checkpoint_dir = "checkpoints/local"
         if tc.wandb_watch and tc.wandb_watch != "none":
             wandb.watch(model, log=tc.wandb_watch, log_freq=100)
+        # Pin accuracy metrics to [0,1] so resume doesn't show scale discontinuity (e.g. % vs decimal)
+        for prefix in ("train/", "val/", "val_raw/", "val_ema/", "test/", "test_ema/"):
+            for name in ("accuracy", "top_2_accuracy", "top_3_accuracy", "top_5_accuracy", "top_9_accuracy", "f1_score"):
+                wandb.define_metric(f"{prefix}{name}", min=0.0, max=1.0)
     else:
         if tc.checkpoint_enabled and rank == 0:
             checkpoint_dir = os.path.join("checkpoints", wandb_run_id) if wandb_run_id else "checkpoints/local"
             os.makedirs(checkpoint_dir, exist_ok=True)
 
     # --- Training loop ---
-    best_val_accuracy = resume_ckpt.get("val_accuracy", 0.0) if resume_ckpt else 0.0
-    best_test_accuracy = resume_ckpt.get("test_accuracy", 0.0) if resume_ckpt else 0.0
+    # Restore best metrics for resume so we don't overwrite best.pt/best_test.pt with worse on first epoch
+    if resume_ckpt is not None and tc.resume_path:
+        best_val_accuracy = resume_ckpt.get("best_val_accuracy", resume_ckpt.get("val_accuracy", 0.0))
+        best_test_accuracy = resume_ckpt.get("best_test_accuracy", resume_ckpt.get("test_accuracy", 0.0))
+        # Fallback: load from best.pt / best_test.pt if resume ckpt lacks best_* (older latest.pt format)
+        if "best_val_accuracy" not in resume_ckpt or "best_test_accuracy" not in resume_ckpt:
+            ckpt_dir = os.path.dirname(os.path.abspath(tc.resume_path))
+            if os.path.exists(os.path.join(ckpt_dir, "best.pt")):
+                try:
+                    b = torch.load(os.path.join(ckpt_dir, "best.pt"), map_location="cpu", weights_only=True)
+                    best_val_accuracy = max(best_val_accuracy, b.get("val_accuracy", 0.0))
+                except Exception:
+                    pass
+            if os.path.exists(os.path.join(ckpt_dir, "best_test.pt")):
+                try:
+                    b = torch.load(os.path.join(ckpt_dir, "best_test.pt"), map_location="cpu", weights_only=True)
+                    best_test_accuracy = max(best_test_accuracy, b.get("test_accuracy", 0.0))
+                except Exception:
+                    pass
+    else:
+        best_val_accuracy = 0.0
+        best_test_accuracy = 0.0
     pending_async: list[threading.Thread] = []  # wandb.log and checkpoint saves run async
 
     if world_size > 1:
@@ -1732,7 +1756,8 @@ def train(cfg: Config) -> None:
                 prefix = "test_ema" if ema is not None else "test"
                 log_dict.update({f"{prefix}/{k}": v for k, v in test_metrics_ema.items()})
             def _log():
-                wandb.log(log_dict)
+                # step=epoch ensures continuity on resume (avoids duplicate steps / scale discontinuity)
+                wandb.log(log_dict, step=epoch)
             t = threading.Thread(target=_log)
             t.start()
             pending_async.append(t)
@@ -1846,6 +1871,8 @@ def train(cfg: Config) -> None:
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "val_accuracy": val_acc_latest,
+                "best_val_accuracy": best_val_accuracy,
+                "best_test_accuracy": best_test_accuracy,
                 "model_type": mc.model_type,
                 "model_config": _get_model_config_for_checkpoint(
                     mc, cfg.data.image_size, patch_size=_get_patch_size_from_model(model_for_save_latest)
