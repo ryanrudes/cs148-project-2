@@ -28,7 +28,8 @@ from torch import Tensor
 from torch.amp import GradScaler, autocast
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import ConcatDataset, DataLoader, Dataset
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, DistributedSampler
 from torchmetrics import Accuracy, F1Score, Metric
 
 from digit_classifier.config import Config
@@ -60,6 +61,17 @@ def _detect_device() -> tuple[torch.device, str]:
     else:
         name = "cpu"
     return torch.device(name), name
+
+
+def _setup_ddp() -> tuple[int, int, int]:
+    """Initialize DDP when WORLD_SIZE > 1. Returns (rank, world_size, local_rank)."""
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    if world_size > 1:
+        import torch.distributed as dist
+        dist.init_process_group(backend="nccl")
+    return rank, world_size, local_rank
 
 
 # ---------------------------------------------------------------------------
@@ -207,9 +219,23 @@ def _get_model_config_for_checkpoint(mc, image_size: int) -> dict:
     return base
 
 
+def _all_reduce_metrics(metrics_dict: dict[str, float], device: torch.device, world_size: int) -> dict[str, float]:
+    """All-reduce metrics across DDP ranks (average)."""
+    if world_size <= 1:
+        return metrics_dict
+    import torch.distributed as dist
+    out = {}
+    for k, v in metrics_dict.items():
+        t = torch.tensor(v, dtype=torch.float32, device=device)
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        out[k] = (t / world_size).item()
+    return out
+
+
 def _get_deit_model(model: nn.Module) -> nn.Module | None:
-    """Get the underlying DeiT3 from a possibly torch.compile-wrapped model."""
+    """Get the underlying DeiT3 from a possibly torch.compile- or DDP-wrapped model."""
     m = getattr(model, "_orig_mod", model)
+    m = getattr(m, "module", m)
     return m if hasattr(m, "set_drop_path_rate") else None
 
 
@@ -368,6 +394,7 @@ def train_epoch(
     ema: AveragedModel | None = None,
     grad_clip_norm: float = 1.0,
     use_amp: bool = True,
+    amp_dtype: torch.dtype | None = None,
     progress_bars: bool = False,
     show_data_wait: bool = False,
     epoch: int = 0,
@@ -380,7 +407,10 @@ def train_epoch(
     running_loss = 0.0
     num_batches = 0
     pin = device.type == "cuda"
-    amp_ctx = autocast(device_type=device.type) if use_amp else nullcontext()
+    if use_amp:
+        amp_ctx = autocast(device_type=device.type, dtype=amp_dtype) if amp_dtype is not None else autocast(device_type=device.type)
+    else:
+        amp_ctx = nullcontext()
 
     total_batches = len(loader)
     columns: list = [
@@ -482,6 +512,7 @@ def validate(
     metrics: dict[str, Metric],
     device: torch.device,
     use_amp: bool = True,
+    amp_dtype: torch.dtype | None = None,
     progress_bars: bool = False,
     show_data_wait: bool = False,
     progress_label: str = "Val",
@@ -493,7 +524,10 @@ def validate(
     running_loss = 0.0
     num_batches = 0
     pin = device.type == "cuda"
-    amp_ctx = autocast(device_type=device.type) if use_amp else nullcontext()
+    if use_amp:
+        amp_ctx = autocast(device_type=device.type, dtype=amp_dtype) if amp_dtype is not None else autocast(device_type=device.type)
+    else:
+        amp_ctx = nullcontext()
 
     total_batches = len(loader)
     val_columns: list = [
@@ -578,6 +612,8 @@ def _create_dataloaders(
     *,
     num_workers: int = -1,
     prefetch_factor: int = 2,
+    rank: int = 0,
+    world_size: int = 1,
 ) -> tuple[DataLoader, DataLoader, DataLoader | None]:
     if num_workers < 0:
         num_workers = min(16, max(1, cpu_count() - 1))
@@ -590,6 +626,9 @@ def _create_dataloaders(
     )
     if num_workers > 0:
         common["prefetch_factor"] = prefetch_factor
+
+    ddp = world_size > 1
+    ddp_kw = {"num_replicas": world_size, "rank": rank} if ddp else {}
 
     original_count = getattr(train_dataset, "num_original", None)
     # Use ratio sampler only when we have both primary (num_original > 0) and external data
@@ -607,6 +646,7 @@ def _create_dataloaders(
             primary_fraction=primary_fraction,
             num_repeats=repeat_aug_repeats,
             drop_last=True,
+            **ddp_kw,
         )
         train_loader = DataLoader(train_dataset, batch_sampler=batch_sampler, **common)
     elif repeat_aug:
@@ -614,6 +654,7 @@ def _create_dataloaders(
             train_dataset,
             shuffle=True,
             num_repeats=repeat_aug_repeats,
+            **ddp_kw,
         )
         train_loader = DataLoader(
             train_dataset,
@@ -630,17 +671,35 @@ def _create_dataloaders(
                 batch_size=batch_size,
                 primary_fraction=primary_fraction,
                 drop_last=True,
+                **ddp_kw,
             )
             train_loader = DataLoader(train_dataset, batch_sampler=sampler, **common)
+        elif ddp:
+            dist_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+            train_loader = DataLoader(
+                train_dataset,
+                sampler=dist_sampler,
+                batch_size=batch_size,
+                drop_last=True,
+                **common,
+            )
         else:
             train_loader = DataLoader(
                 train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, **common,
             )
 
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **common)
+    if ddp:
+        val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+        val_loader = DataLoader(val_dataset, sampler=val_sampler, batch_size=batch_size, **common)
+    else:
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **common)
     test_loader = None
     if test_dataset is not None:
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, **common)
+        if ddp:
+            test_sampler = DistributedSampler(test_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+            test_loader = DataLoader(test_dataset, sampler=test_sampler, batch_size=batch_size, **common)
+        else:
+            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, **common)
     return train_loader, val_loader, test_loader
 
 
@@ -747,11 +806,110 @@ def _calibrate_num_workers_on_dataset(
             best_throughput = throughput
             best_nw = nw
 
-    console.print("[bold]Worker calibration (on real data):[/bold]")
-    for nw, tp in results:
-        mark = " ← best" if nw == best_nw else ""
-        console.print(f"  [dim]{nw} workers:[/dim] {tp:.0f} samples/s{mark}")
+    # Only rank 0 prints calibration (all ranks run it for correctness)
+    try:
+        import torch.distributed as dist
+        is_rank0 = not dist.is_initialized() or dist.get_rank() == 0
+    except Exception:
+        is_rank0 = True
+    if is_rank0:
+        console.print("[bold]Worker calibration (on real data):[/bold]")
+        for nw, tp in results:
+            mark = " ← best" if nw == best_nw else ""
+            console.print(f"  [dim]{nw} workers:[/dim] {tp:.0f} samples/s{mark}")
     return best_nw
+
+
+def _profile_compile_modes(
+    model: nn.Module,
+    train_loader: DataLoader,
+    device: torch.device,
+    num_warmup: int = 5,
+    num_timed: int = 15,
+) -> str:
+    """Profile torch.compile modes and return the one with highest throughput."""
+    import time
+
+    modes = ["default", "reduce-overhead", "max-autotune"]
+    batch_size = train_loader.batch_size if hasattr(train_loader, "batch_size") else getattr(
+        train_loader.batch_sampler, "batch_size", 128
+    )
+    criterion = nn.CrossEntropyLoss()
+    pin = device.type == "cuda"
+    use_amp = device.type == "cuda"
+    amp_ctx = autocast(device_type=device.type) if use_amp else nullcontext()
+    scaler = GradScaler(enabled=use_amp)
+
+    best_mode = "default"
+    best_throughput = 0.0
+    results: list[tuple[str, float]] = []
+
+    for mode in modes:
+        compiled = torch.compile(model, mode=mode)
+        compiled.train()
+        opt = torch.optim.AdamW(compiled.parameters(), lr=1e-4)
+        loader_iter = iter(train_loader)
+        # Warmup
+        for _ in range(num_warmup):
+            try:
+                images, labels = next(loader_iter)
+            except StopIteration:
+                loader_iter = iter(train_loader)
+                images, labels = next(loader_iter)
+            if images.dtype != torch.float32:
+                images = images.float()
+            images = images.to(device, non_blocking=pin)
+            labels = labels.long().to(device, non_blocking=pin)
+            opt.zero_grad()
+            with amp_ctx:
+                logits = compiled(images)
+                loss = criterion(logits, labels)
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        # Timed
+        loader_iter = iter(train_loader)
+        start = time.perf_counter()
+        count = 0
+        for _ in range(num_timed):
+            try:
+                images, labels = next(loader_iter)
+            except StopIteration:
+                break
+            if images.dtype != torch.float32:
+                images = images.float()
+            images = images.to(device, non_blocking=pin)
+            labels = labels.long().to(device, non_blocking=pin)
+            opt.zero_grad()
+            with amp_ctx:
+                logits = compiled(images)
+                loss = criterion(logits, labels)
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+            count += 1
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        elapsed = time.perf_counter() - start
+        throughput = count * batch_size / elapsed if elapsed > 0 else 0
+        results.append((mode, throughput))
+        if throughput > best_throughput:
+            best_throughput = throughput
+            best_mode = mode
+
+    try:
+        import torch.distributed as dist
+        is_rank0 = not dist.is_initialized() or dist.get_rank() == 0
+    except Exception:
+        is_rank0 = True
+    if is_rank0:
+        console.print("[bold]Compile mode profiling:[/bold]")
+        for mode, tp in results:
+            mark = " ← best" if mode == best_mode else ""
+            console.print(f"  [dim]{mode}:[/dim] {tp:.0f} samples/s{mark}")
+    return best_mode
 
 
 def _wrap_external_with_cache(
@@ -809,8 +967,13 @@ def train(cfg: Config) -> None:
     if tc.resume_path and tc.pretrain_path:
         raise ValueError("Cannot use both --resume and --pretrain; choose one.")
 
+    rank, world_size, local_rank = _setup_ddp()
     device, device_name = _detect_device()
-    console.print(f"[bold]Device:[/bold] {device}")
+    if world_size > 1:
+        device = torch.device(f"cuda:{local_rank}")
+        device_name = f"cuda:{local_rank} (rank {rank}/{world_size})"
+    if rank == 0:
+        console.print(f"[bold]Device:[/bold] {device}")
 
     # --- CUDA-specific backend flags ---
     if device.type == "cuda":
@@ -833,7 +996,7 @@ def train(cfg: Config) -> None:
 
     # --- Data ---
     external_cache_max_mb = _resolve_external_cache_max_mb(cfg.data.external_cache_max_mb)
-    if cfg.data.external_cache and cfg.data.external_cache_max_mb < 0:
+    if cfg.data.external_cache and cfg.data.external_cache_max_mb < 0 and rank == 0:
         console.print(f"External cache (auto): [cyan]{external_cache_max_mb:.0f} MB[/cyan]")
 
     # When calibrating, build dataset with cache off first so we can benchmark on real data
@@ -857,10 +1020,12 @@ def train(cfg: Config) -> None:
             external_cache_max_mb=external_cache_max_mb if use_cache_for_build else 0,
             num_workers=num_workers,
         )
-        console.print(f"External-only: {len(train_dataset):,} train / {len(val_dataset):,} val")
+        if rank == 0:
+            console.print(f"External-only: {len(train_dataset):,} train / {len(val_dataset):,} val")
     else:
         images, labels, cached_mean, cached_std = load_cached_dataset(cfg)
-        console.print(f"Loaded [cyan]{cfg.data.dataset_name}[/cyan]: {images.shape}, mean={cached_mean}, std={cached_std}")
+        if rank == 0:
+            console.print(f"Loaded [cyan]{cfg.data.dataset_name}[/cyan]: {images.shape}, mean={cached_mean}, std={cached_std}")
 
         train_dataset, val_dataset, mean, std = split_dataset(
             images, labels, cached_mean, cached_std,
@@ -886,15 +1051,17 @@ def train(cfg: Config) -> None:
         )
         if cfg.data.external_cache and external_cache_max_mb > 0:
             _wrap_external_with_cache(train_dataset, external_cache_max_mb, num_workers)
-            console.print(
-                f"  [dim]External cache: {external_cache_max_mb:.0f} MB total "
+            if rank == 0:
+                console.print(
+                    f"  [dim]External cache: {external_cache_max_mb:.0f} MB total "
                 f"({external_cache_max_mb / max(1, num_workers):.0f} MB per worker × {num_workers})[/dim]"
             )
     else:
         num_workers = cfg.data.num_workers
         if num_workers < 0:
             num_workers = min(16, max(1, cpu_count() - 1))
-    console.print(f"DataLoader workers: [cyan]{num_workers}[/cyan]")
+    if rank == 0:
+        console.print(f"DataLoader workers: [cyan]{num_workers}[/cyan]")
 
     test_dataset = None
     if cfg.data.test_dataset_path:
@@ -907,12 +1074,14 @@ def train(cfg: Config) -> None:
             std=std,
             preload=cfg.data.test_preload,
         )
-        console.print(
-            f"Test (pareidolia): {len(test_dataset)} samples (no augmentation)"
-            + (f", skipped {test_dataset.skipped} missing" if test_dataset.skipped else "")
-        )
+        if rank == 0:
+            console.print(
+                f"Test (pareidolia): {len(test_dataset)} samples (no augmentation)"
+                + (f", skipped {test_dataset.skipped} missing" if test_dataset.skipped else "")
+            )
         train_val_msg += f", Test: {len(test_dataset)} samples"
-    console.print(train_val_msg)
+    if rank == 0:
+        console.print(train_val_msg)
 
     train_loader, val_loader, test_loader = _create_dataloaders(
         train_dataset, val_dataset, cfg.data.batch_size,
@@ -922,6 +1091,8 @@ def train(cfg: Config) -> None:
         test_dataset=test_dataset,
         num_workers=num_workers,
         prefetch_factor=cfg.data.prefetch_factor,
+        rank=rank,
+        world_size=world_size,
     )
 
     # --- Mixup / CutMix ---
@@ -938,6 +1109,27 @@ def train(cfg: Config) -> None:
 
     # --- Model ---
     mc = cfg.model
+    use_flash_attention = mc.use_flash_attention
+    if use_flash_attention is None:
+        if mc.model_type == "deit" and device.type == "cuda":
+            cuda_be = getattr(torch.backends, "cuda", None)
+            if cuda_be is not None and hasattr(cuda_be, "enable_flash_sdp"):
+                try:
+                    cuda_be.enable_flash_sdp(True)
+                    use_flash_attention = True
+                except Exception:
+                    use_flash_attention = False
+            else:
+                use_flash_attention = False
+        else:
+            use_flash_attention = False
+    elif use_flash_attention and device.type == "cuda":
+        cuda_be = getattr(torch.backends, "cuda", None)
+        if cuda_be is not None and hasattr(cuda_be, "enable_flash_sdp"):
+            try:
+                cuda_be.enable_flash_sdp(True)
+            except Exception:
+                pass
     if mc.model_type == "resnext":
         model_name = "ResNeXt"
         model = ResNeXt(
@@ -954,7 +1146,7 @@ def train(cfg: Config) -> None:
             num_classes=mc.num_classes,
             drop_path_rate=mc.drop_path_rate,
             image_size=cfg.data.image_size,
-            use_flash_attention=mc.use_flash_attention,
+            use_flash_attention=use_flash_attention,
             init_values=mc.layer_scale_init,
         ).to(device)
 
@@ -980,7 +1172,8 @@ def train(cfg: Config) -> None:
         model_keys = set(model.state_dict().keys())
         filtered = {k: v for k, v in stripped.items() if k in model_keys}
         model.load_state_dict(filtered, strict=True)
-        console.print(f"[bold]Loaded pretrained weights from[/bold] {tc.pretrain_path} (image_size {ckpt_image_size} -> {cfg.data.image_size})")
+        if rank == 0:
+            console.print(f"[bold]Loaded pretrained weights from[/bold] {tc.pretrain_path} (image_size {ckpt_image_size} -> {cfg.data.image_size})")
     elif tc.resume_path:
         resume_ckpt = torch.load(tc.resume_path, map_location=device, weights_only=False)
         ckpt_config = resume_ckpt.get("model_config", {})
@@ -998,27 +1191,44 @@ def train(cfg: Config) -> None:
         filtered = {k: v for k, v in stripped.items() if k in model_keys}
         model.load_state_dict(filtered, strict=True)
         start_epoch = resume_ckpt.get("epoch", 0)
-        console.print(f"[bold]Resumed from[/bold] {tc.resume_path} (epoch {start_epoch})")
+        if rank == 0:
+            console.print(f"[bold]Resumed from[/bold] {tc.resume_path} (epoch {start_epoch})")
+
+    if world_size > 1:
+        model = DDP(model, device_ids=[local_rank])
 
     param_groups = _get_param_groups(
-        model,
-        lr=tc.lr,
+        model.module if hasattr(model, "module") else model,
+        lr=tc.lr * world_size,
         weight_decay=tc.weight_decay,
         weight_decay_exclude=tc.weight_decay_exclude,
         layer_decay=tc.layer_decay,
     )
 
     if tc.compile_model:
-        model = torch.compile(model)
+        if tc.compile_mode is not None:
+            model = torch.compile(model, mode=tc.compile_mode)
+        elif device.type == "cuda" and world_size == 1:
+            best_mode = _profile_compile_modes(
+                model, train_loader, device, num_warmup=5, num_timed=15
+            )
+            model = torch.compile(model, mode=best_mode)
+            if rank == 0:
+                console.print(f"[dim]Using compile mode: {best_mode}[/dim]")
+        else:
+            model = torch.compile(model)
 
     if tc.ema_enabled:
-        ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(tc.ema_decay), use_buffers=True)
+        ema_base = model.module if hasattr(model, "module") else model
+        ema = AveragedModel(ema_base, multi_avg_fn=get_ema_multi_avg_fn(tc.ema_decay), use_buffers=True)
         if resume_ckpt is not None and "ema_state_dict" in resume_ckpt:
             try:
                 ema.load_state_dict(resume_ckpt["ema_state_dict"])
-                console.print("[dim]Restored EMA state[/dim]")
+                if rank == 0:
+                    console.print("[dim]Restored EMA state[/dim]")
             except Exception as e:
-                console.print(f"[yellow]Could not restore EMA: {e}[/yellow]")
+                if rank == 0:
+                    console.print(f"[yellow]Could not restore EMA: {e}[/yellow]")
     else:
         ema = None
 
@@ -1045,22 +1255,40 @@ def train(cfg: Config) -> None:
     scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer, schedulers=[warmup_sched, main_sched], milestones=[tc.warmup_epochs],
     )
-    if warm_restart_epochs:
+    if warm_restart_epochs and rank == 0:
         console.print(f"[bold]Warm-restart epochs:[/bold] {warm_restart_epochs}")
 
     if resume_ckpt is not None:
         if "optimizer_state_dict" in resume_ckpt:
             try:
                 optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
-                console.print("[dim]Restored optimizer state[/dim]")
+                if rank == 0:
+                    console.print("[dim]Restored optimizer state[/dim]")
             except Exception as e:
-                console.print(f"[yellow]Could not restore optimizer: {e}[/yellow]")
+                if rank == 0:
+                    console.print(f"[yellow]Could not restore optimizer: {e}[/yellow]")
         if "scheduler_state_dict" in resume_ckpt:
             try:
                 scheduler.load_state_dict(resume_ckpt["scheduler_state_dict"])
-                console.print("[dim]Restored scheduler state[/dim]")
+                if rank == 0:
+                    console.print("[dim]Restored scheduler state[/dim]")
             except Exception as e:
-                console.print(f"[yellow]Could not restore scheduler: {e}[/yellow]")
+                if rank == 0:
+                    console.print(f"[yellow]Could not restore scheduler: {e}[/yellow]")
+
+    # --- AMP dtype ---
+    amp_dtype: torch.dtype | None = None
+    if device.type == "cuda" and tc.amp_enabled:
+        if tc.amp_dtype == "bfloat16":
+            if torch.cuda.is_bf16_supported():
+                amp_dtype = torch.bfloat16
+            else:
+                console.print("[yellow]bfloat16 not supported on this GPU; falling back to float16[/yellow]")
+                amp_dtype = torch.float16
+        elif tc.amp_dtype == "auto":
+            amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        else:
+            amp_dtype = torch.float16
 
     # --- Metrics ---
     metrics = _build_metrics(cfg.model.num_classes, device)
@@ -1071,13 +1299,13 @@ def train(cfg: Config) -> None:
         )
     else:
         val_criterion = nn.CrossEntropyLoss()
-    scaler = GradScaler(enabled=(device.type == "cuda" and tc.amp_enabled))
+    scaler = GradScaler(enabled=(device.type == "cuda" and tc.amp_enabled and amp_dtype != torch.bfloat16))
 
     # --- Wandb ---
     # Resolve the effective batch size for logging (batch_sampler → None for .batch_size)
     effective_batch_size = cfg.data.batch_size
 
-    if tc.wandb_enabled:
+    if tc.wandb_enabled and rank == 0:
         wandb_config = {
             "dataset": cfg.data.dataset_name,
             "model": model_name,
@@ -1100,7 +1328,7 @@ def train(cfg: Config) -> None:
             os.makedirs(checkpoint_dir, exist_ok=True)
         wandb.config.update({"mean": mean, "std": std})
     else:
-        if tc.checkpoint_enabled:
+        if tc.checkpoint_enabled and rank == 0:
             checkpoint_dir = "checkpoints/local"
             os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -1124,7 +1352,7 @@ def train(cfg: Config) -> None:
 
         # Disable mixup for the final N epochs.
         active_mixup = mixup if epoch < tc.epochs - tc.mixup_off_last_n else None
-        if epoch == tc.epochs - tc.mixup_off_last_n:
+        if epoch == tc.epochs - tc.mixup_off_last_n and rank == 0:
             console.print(f"[yellow]Disabling mixup for final {tc.mixup_off_last_n} epochs[/yellow]")
 
         train_criterion = select_train_criterion(
@@ -1138,26 +1366,32 @@ def train(cfg: Config) -> None:
             model, train_loader, train_criterion, optimizer, metrics, scaler,
             device, mixup_fn=active_mixup, ema=ema, grad_clip_norm=tc.grad_clip_norm,
             use_amp=tc.amp_enabled,
-            progress_bars=tc.progress_bars or tc.show_data_wait,
-            show_data_wait=tc.show_data_wait,
+            amp_dtype=amp_dtype,
+            progress_bars=(tc.progress_bars or tc.show_data_wait) and rank == 0,
+            show_data_wait=tc.show_data_wait and rank == 0,
             epoch=epoch,
             total_epochs=tc.epochs,
         )
+        train_metrics = _all_reduce_metrics(train_metrics, device, world_size)
         do_validate = (epoch + 1) % tc.val_every_n_epochs == 0 or epoch == tc.epochs - 1
         if do_validate:
             val_metrics_raw = validate(
                 model, val_loader, val_criterion, metrics, device,
                 use_amp=tc.amp_enabled,
-                progress_bars=tc.progress_bars or tc.show_data_wait,
-                show_data_wait=tc.show_data_wait,
+                amp_dtype=amp_dtype,
+                progress_bars=(tc.progress_bars or tc.show_data_wait) and rank == 0,
+                show_data_wait=tc.show_data_wait and rank == 0,
             )
+            val_metrics_raw = _all_reduce_metrics(val_metrics_raw, device, world_size)
             if ema is not None:
                 val_metrics_ema = validate(
                     ema, val_loader, val_criterion, metrics, device,
                     use_amp=tc.amp_enabled,
-                    progress_bars=tc.progress_bars or tc.show_data_wait,
-                    show_data_wait=tc.show_data_wait,
+                    amp_dtype=amp_dtype,
+                    progress_bars=(tc.progress_bars or tc.show_data_wait) and rank == 0,
+                    show_data_wait=tc.show_data_wait and rank == 0,
                 )
+                val_metrics_ema = _all_reduce_metrics(val_metrics_ema, device, world_size)
             else:
                 val_metrics_ema = dict(val_metrics_raw)
         else:
@@ -1170,19 +1404,22 @@ def train(cfg: Config) -> None:
             test_metrics_ema = validate(
                 eval_model, test_loader, val_criterion, metrics, device,
                 use_amp=tc.amp_enabled,
-                progress_bars=tc.progress_bars or tc.show_data_wait,
-                show_data_wait=tc.show_data_wait,
+                amp_dtype=amp_dtype,
+                progress_bars=(tc.progress_bars or tc.show_data_wait) and rank == 0,
+                show_data_wait=tc.show_data_wait and rank == 0,
                 progress_label="Test",
             )
+            test_metrics_ema = _all_reduce_metrics(test_metrics_ema, device, world_size)
 
         # --- Pre-restart checkpoint (before scheduler.step) ---
-        if tc.checkpoint_enabled and warm_restart_epochs and (epoch + 1) in warm_restart_epochs:
+        if tc.checkpoint_enabled and rank == 0 and warm_restart_epochs and (epoch + 1) in warm_restart_epochs:
             ckpt_root = checkpoint_dir if "checkpoint_dir" in dir() else "checkpoints"
             os.makedirs(ckpt_root, exist_ok=True)
             pre_path = os.path.join(ckpt_root, f"pre_restart_epoch_{epoch + 1}.pt")
+            model_state = (model.module if hasattr(model, "module") else model).state_dict()
             save_dict: dict[str, object] = {
                 "epoch": epoch + 1,
-                "model_state_dict": model.state_dict(),
+                "model_state_dict": model_state,
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "val_accuracy": val_metrics_ema.get("accuracy"),
@@ -1207,13 +1444,14 @@ def train(cfg: Config) -> None:
 
         # --- Logging ---
         current_lr = scheduler.get_last_lr()[0]
-        _log_epoch_table(
-            epoch + 1, train_metrics, val_metrics_raw, val_metrics_ema, current_lr,
-            test_ema=test_metrics_ema,
-            use_ema=ema is not None,
-        )
+        if rank == 0:
+            _log_epoch_table(
+                epoch + 1, train_metrics, val_metrics_raw, val_metrics_ema, current_lr,
+                test_ema=test_metrics_ema,
+                use_ema=ema is not None,
+            )
 
-        if tc.wandb_enabled:
+        if tc.wandb_enabled and rank == 0:
             log_dict = {
                 "epoch": epoch + 1,
                 "lr": current_lr,
@@ -1236,11 +1474,12 @@ def train(cfg: Config) -> None:
             val_accuracy = 0.0
         if do_validate and val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
-            if tc.checkpoint_enabled:
+            if tc.checkpoint_enabled and rank == 0:
                 ckpt_path = os.path.join(checkpoint_dir, "best.pt")
+                model_state = (model.module if hasattr(model, "module") else model).state_dict()
                 save_dict = {
                     "epoch": epoch + 1,
-                    "model_state_dict": model.state_dict(),
+                    "model_state_dict": model_state,
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
                     "val_accuracy": val_accuracy,
@@ -1270,6 +1509,7 @@ def train(cfg: Config) -> None:
 
                 console.print(f"[green]Saved best model (val_accuracy={val_accuracy:.4f}) at epoch {epoch + 1}[/green]")
 
-    if tc.wandb_enabled:
+    if tc.wandb_enabled and rank == 0:
         wandb.finish()
-    console.print("[bold green]Training complete.[/bold green]")
+    if rank == 0:
+        console.print("[bold green]Training complete.[/bold green]")

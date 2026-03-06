@@ -49,7 +49,7 @@ class ModelConfig:
     groups: int = 64
     width_per_group: int = 4
     drop_path_rate: float = 0.1
-    use_flash_attention: bool = False
+    use_flash_attention: bool | None = None  # None = auto (True when DeiT + CUDA + Flash available)
     deit_model: str = "base"
     layer_scale_init: float = 1e-4  # LayerScale init (DeiT-III uses 1e-4)
 
@@ -101,7 +101,9 @@ class TrainingConfig:
     weight_decay_exclude: bool = True
     layer_decay: float = 0.0
     amp_enabled: bool = True
+    amp_dtype: str = "auto"  # "auto" | "float16" | "bfloat16"; auto = bf16 if supported else fp16
     compile_model: bool = True
+    compile_mode: str | None = None  # None = profile and choose; else "default"|"reduce-overhead"|"max-autotune"
     wandb_enabled: bool = True
     wandb_project: str = "CS148-MNIST"
     replace_best_checkpoint: bool = True  # overwrite best.pt / model-best artifact instead of accumulating

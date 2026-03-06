@@ -129,6 +129,18 @@ python -m digit_classifier pull-cache --repo <your-username>/digit-classificatio
 python -m digit_classifier train
 ```
 
+### Multi-GPU training (DDP)
+
+Use `torchrun` to train on multiple GPUs. Batch size is per-GPU; learning rate is scaled linearly by world size.
+
+```bash
+# 2 GPUs on one node
+torchrun --nproc_per_node=2 python -m digit_classifier train --epochs 900
+
+# 4 GPUs
+torchrun --nproc_per_node=4 python -m digit_classifier train
+```
+
 ## Pareidolia test dataset
 
 Generate OOD test images where digits 0–9 are implied by real-world objects
@@ -216,7 +228,7 @@ For longer training, use `--epochs 800`, `--weight-decay 0.05`,
 
 ```bash
 python -m digit_classifier train \
-  --deit-model tiny \
+  --deit-model base \
   --warmup-epochs 5 \
   --epochs 400 \
   --batch-size 256 \
@@ -235,6 +247,7 @@ python -m digit_classifier train \
   --repeat-aug-repeats 3 \
   --layer-scale-init 1e-6 \
   --mixup-off-last-n 0 \
+  --test-dataset dataset_out \
   --flash-attention \
   --no-ema \
   --no-amp \

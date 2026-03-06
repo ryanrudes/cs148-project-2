@@ -74,7 +74,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             groups=args.groups,
             width_per_group=args.width_per_group,
             drop_path_rate=args.drop_path_rate,
-            use_flash_attention=args.use_flash_attention,
+            use_flash_attention={"auto": None, "on": True, "off": False}[args.use_flash_attention],
             deit_model=args.deit_model,
             layer_scale_init=args.layer_scale_init,
         ),
@@ -104,7 +104,9 @@ def _handle_train(args: argparse.Namespace) -> None:
             weight_decay_exclude=args.weight_decay_exclude,
             layer_decay=args.layer_decay,
             amp_enabled=args.amp_enabled,
+            amp_dtype=args.amp_dtype,
             compile_model=not args.no_compile,
+            compile_mode=getattr(args, "compile_mode", None),
             wandb_enabled=not args.no_wandb,
             wandb_project=args.wandb_project,
             replace_best_checkpoint=args.replace_best_checkpoint,
@@ -381,8 +383,9 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--drop-path-rate", type=float, default=0.1)
     tr.add_argument("--deit-model", choices=["tiny", "small", "base", "large", "huge"], default="base",
                     help="DeiT-III model size: tiny, small, base, large (304M), huge (632M, patch14)")
-    tr.add_argument("--flash-attention", dest="use_flash_attention", action="store_true", default=False,
-                    help="Use SDPA (Flash Attention when available) instead of manual attention")
+    tr.add_argument("--flash-attention", dest="use_flash_attention", choices=["auto", "on", "off"],
+                    default="auto",
+                    help="Use SDPA (Flash Attention when available): auto (default for DeiT+CUDA), on, off")
     tr.add_argument("--layer-scale-init", type=float, default=1e-4,
                     help="LayerScale initialization value (DeiT-III uses 1e-4)")
     # Training
@@ -416,7 +419,13 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Layer-wise LR decay (e.g. 0.75). 0 disables. Earlier layers get lower LR.")
     tr.add_argument("--no-amp", dest="amp_enabled", action="store_false", default=True,
                     help="Disable mixed precision (autocast); use float32 for stability")
+    tr.add_argument("--amp-dtype", dest="amp_dtype", choices=["auto", "float16", "bfloat16"],
+                    default="auto",
+                    help="AMP dtype: auto (bf16 if supported else fp16), float16, bfloat16")
     tr.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
+    tr.add_argument("--compile-mode", dest="compile_mode", choices=["default", "reduce-overhead", "max-autotune"],
+                    default=None,
+                    help="torch.compile mode (default: profile and choose best). Use to skip profiling.")
     tr.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     tr.add_argument("--no-checkpoint", action="store_true",
                     help="Disable saving checkpoints to disk and wandb")

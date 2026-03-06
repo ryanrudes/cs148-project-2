@@ -32,6 +32,10 @@ class RatioBatchSampler:
         If ``True``, discard the final incomplete batch.
     seed : int | None
         RNG seed for reproducibility.
+    num_replicas : int
+        For DDP: number of processes (default 1).
+    rank : int
+        For DDP: this process's rank (default 0).
     """
 
     def __init__(
@@ -42,6 +46,8 @@ class RatioBatchSampler:
         primary_fraction: float = 0.95,
         drop_last: bool = True,
         seed: int | None = None,
+        num_replicas: int = 1,
+        rank: int = 0,
     ) -> None:
         self.original_count = int(original_count)
         self.external_count = int(total_count - original_count)
@@ -52,12 +58,18 @@ class RatioBatchSampler:
         self.k_secondary = self.batch_size - self.k_primary
         self.drop_last = bool(drop_last)
         self.seed = seed
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.epoch = 0
 
     def __iter__(self) -> Iterator[list[int]]:
-        rnd = random.Random(self.seed)
+        rnd = random.Random((self.seed or 0) + self.epoch * 1000)
 
-        orig_idx = list(range(self.original_count))
-        ext_idx = list(range(self.original_count, self.original_count + self.external_count))
+        orig_idx = [i for i in range(self.original_count) if i % self.num_replicas == self.rank]
+        ext_idx = [
+            i for i in range(self.original_count, self.original_count + self.external_count)
+            if (i - self.original_count) % self.num_replicas == self.rank
+        ]
 
         rnd.shuffle(orig_idx)
         rnd.shuffle(ext_idx)
@@ -122,6 +134,10 @@ class RatioBatchSampler:
             return -(-self.total_count // self.batch_size)
         # Approximate when not drop_last (rare)
         return -(-self.original_count // self.k_primary)
+
+    def set_epoch(self, epoch: int) -> None:
+        """For DDP: vary shuffle per epoch."""
+        self.epoch = epoch
 
 
 class RepeatAugSampler(Sampler[int]):
@@ -207,7 +223,7 @@ class RepeatAugRatioBatchSampler:
     Repeats each sample index ``num_repeats`` times (for different augmentations),
     then forms batches with ``primary_fraction`` from the original pool and the
     remainder from the external pool. Use when both repeat_aug and external data
-    are enabled.
+    are enabled. Supports DDP via num_replicas and rank.
     """
 
     def __init__(
@@ -219,6 +235,8 @@ class RepeatAugRatioBatchSampler:
         num_repeats: int = 3,
         drop_last: bool = True,
         seed: int | None = None,
+        num_replicas: int = 1,
+        rank: int = 0,
     ) -> None:
         self.original_count = int(original_count)
         self.external_count = int(total_count - original_count)
@@ -231,17 +249,21 @@ class RepeatAugRatioBatchSampler:
         self.drop_last = bool(drop_last)
         self.seed = seed
         self.epoch = 0
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
 
     def __iter__(self) -> Iterator[list[int]]:
         g = torch.Generator()
         g.manual_seed((self.seed or 0) + self.epoch * 1000)
 
-        orig_idx = torch.arange(self.original_count)
-        orig_idx = torch.repeat_interleave(orig_idx, repeats=self.num_repeats, dim=0)
+        orig_full = torch.arange(self.original_count)
+        orig_full = orig_full[orig_full % self.num_replicas == self.rank]
+        orig_idx = torch.repeat_interleave(orig_full, repeats=self.num_repeats, dim=0)
         orig_idx = orig_idx[torch.randperm(len(orig_idx), generator=g)].tolist()
 
-        ext_idx = torch.arange(self.original_count, self.original_count + self.external_count)
-        ext_idx = torch.repeat_interleave(ext_idx, repeats=self.num_repeats, dim=0)
+        ext_full = torch.arange(self.original_count, self.original_count + self.external_count)
+        ext_full = ext_full[(ext_full - self.original_count) % self.num_replicas == self.rank]
+        ext_idx = torch.repeat_interleave(ext_full, repeats=self.num_repeats, dim=0)
         ext_idx = ext_idx[torch.randperm(len(ext_idx), generator=g)].tolist()
 
         p_orig = 0
