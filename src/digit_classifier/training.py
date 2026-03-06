@@ -70,7 +70,8 @@ def _setup_ddp() -> tuple[int, int, int]:
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if world_size > 1:
         import torch.distributed as dist
-        dist.init_process_group(backend="nccl")
+        backend = os.environ.get("DDP_BACKEND", "nccl")
+        dist.init_process_group(backend=backend)
     return rank, world_size, local_rank
 
 
@@ -1266,6 +1267,11 @@ def train(cfg: Config) -> None:
             console.print(f"[bold]Resumed from[/bold] {tc.resume_path} (epoch {start_epoch})")
 
     if world_size > 1:
+        import torch.distributed as dist
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        dist.barrier()
+        console.print(f"[dim]Rank {rank}/{world_size}: barrier passed, wrapping DDP…[/dim]")
         model = DDP(model, device_ids=[local_rank])
         console.print(f"[dim]Rank {rank}/{world_size}: DDP wrapped[/dim]")
 
