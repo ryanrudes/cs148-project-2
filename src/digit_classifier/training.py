@@ -1768,6 +1768,30 @@ def train(cfg: Config) -> None:
                 pending_async.append(t)
                 console.print(f"[green]Saved best test model (test_accuracy={test_accuracy:.4f}) at epoch {epoch + 1}[/green]")
 
+        # --- Latest checkpoint (every epoch, always overwrite) ---
+        if tc.checkpoint_latest and tc.checkpoint_enabled and rank == 0:
+            ckpt_path_latest = os.path.join(checkpoint_dir, "latest.pt")
+            model_state_latest = (model.module if hasattr(model, "module") else model).state_dict()
+            val_acc_latest = val_metrics_ema.get("accuracy") if do_validate else None
+            save_dict_latest = {
+                "epoch": epoch + 1,
+                "model_state_dict": model_state_latest,
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "val_accuracy": val_acc_latest,
+                "model_type": mc.model_type,
+                "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
+            }
+            if ema is not None:
+                save_dict_latest["ema_state_dict"] = ema.state_dict()
+
+            def _save_latest():
+                torch.save(save_dict_latest, ckpt_path_latest)
+
+            t = threading.Thread(target=_save_latest)
+            t.start()
+            pending_async.append(t)
+
     if rank == 0:
         for t in pending_async:
             t.join()

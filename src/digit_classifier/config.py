@@ -110,6 +110,7 @@ class TrainingConfig:
     wandb_project: str = "CS148-MNIST"
     replace_best_checkpoint: bool = True  # overwrite best.pt / model-best artifact instead of accumulating
     checkpoint_enabled: bool = True  # when False, no checkpoints are saved to disk or wandb
+    checkpoint_latest: bool = False  # save latest.pt after every epoch (always overwrite); enables resume from last epoch
     val_every_n_epochs: int = 1  # validate every N epochs (1 = every epoch)
     progress_bars: bool = False  # show Rich progress bars for each epoch's batches
     show_data_wait: bool = False  # show % of time GPU waits for data (requires progress_bars)

@@ -113,6 +113,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             wandb_project=args.wandb_project,
             replace_best_checkpoint=args.replace_best_checkpoint,
             checkpoint_enabled=not args.no_checkpoint,
+            checkpoint_latest=getattr(args, "checkpoint_latest", False),
             val_every_n_epochs=args.val_every_n_epochs,
             progress_bars=getattr(args, "progress_bars", False),
             show_data_wait=getattr(args, "show_data_wait", False),
@@ -448,6 +449,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Overwrite best checkpoint on disk and wandb (default)")
     tr.add_argument("--accumulate-best-checkpoints", dest="replace_best_checkpoint", action="store_false",
                     help="Keep separate checkpoint versions instead of overwriting")
+    tr.add_argument("--checkpoint-latest", action="store_true",
+                    help="Save latest.pt after every epoch (always overwrite); enables resume from last epoch")
     tr.add_argument("--no-ema", action="store_true", help="Disable EMA")
     tr.add_argument("--no-warm-restarts", action="store_true",
                         help="Disable cosine warm-restart scheduler")
