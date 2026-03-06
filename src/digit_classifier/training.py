@@ -1439,6 +1439,7 @@ def train(cfg: Config) -> None:
 
     # --- Training loop ---
     best_val_accuracy = resume_ckpt.get("val_accuracy", 0.0) if resume_ckpt else 0.0
+    best_test_accuracy = resume_ckpt.get("test_accuracy", 0.0) if resume_ckpt else 0.0
     pending_async: list[threading.Thread] = []  # wandb.log and checkpoint saves run async
 
     if world_size > 1:
@@ -1664,6 +1665,51 @@ def train(cfg: Config) -> None:
                 t.start()
                 pending_async.append(t)
                 console.print(f"[green]Saved best model (val_accuracy={val_accuracy:.4f}) at epoch {epoch + 1}[/green]")
+
+        # --- Best-test checkpoint (when we ran test and test improved) ---
+        test_accuracy = test_metrics_ema["accuracy"] if test_metrics_ema is not None else 0.0
+        if do_validate and test_metrics_ema is not None and test_accuracy > best_test_accuracy:
+            best_test_accuracy = test_accuracy
+            if tc.checkpoint_enabled and rank == 0:
+                ckpt_path_test = os.path.join(checkpoint_dir, "best_test.pt")
+                model_state_test = (model.module if hasattr(model, "module") else model).state_dict()
+                val_acc_for_test = val_metrics_ema["accuracy"]
+                save_dict_test = {
+                    "epoch": epoch + 1,
+                    "model_state_dict": model_state_test,
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "val_accuracy": val_acc_for_test,
+                    "test_accuracy": test_accuracy,
+                    "model_type": mc.model_type,
+                    "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
+                }
+                if ema is not None:
+                    save_dict_test["ema_state_dict"] = ema.state_dict()
+
+                def _save_best_test():
+                    torch.save(save_dict_test, ckpt_path_test)
+                    if tc.wandb_enabled:
+                        art_name_test = f"model-best-test-{wandb.run.id}"
+                        if tc.replace_best_checkpoint:
+                            try:
+                                api = wandb.Api()
+                                prev = api.artifact(
+                                    f"{wandb.run.entity}/{wandb.run.project}/{art_name_test}:best-test",
+                                    type="model",
+                                )
+                                prev.delete(delete_aliases=True)
+                            except Exception:
+                                pass
+                        art_test = wandb.Artifact(art_name_test, type="model",
+                                                  metadata={"epoch": epoch + 1, "val_accuracy": val_acc_for_test, "test_accuracy": test_accuracy})
+                        art_test.add_file(ckpt_path_test)
+                        wandb.log_artifact(art_test, aliases=["best-test"])
+
+                t = threading.Thread(target=_save_best_test)
+                t.start()
+                pending_async.append(t)
+                console.print(f"[green]Saved best test model (test_accuracy={test_accuracy:.4f}) at epoch {epoch + 1}[/green]")
 
     if rank == 0:
         for t in pending_async:
