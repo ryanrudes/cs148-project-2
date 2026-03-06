@@ -760,20 +760,19 @@ def _calibrate_num_workers_on_dataset(
     batch_size: int,
     prefetch_factor: int,
     num_batches: int = 50,
+    *,
+    rank: int = 0,
+    world_size: int = 1,
 ) -> int:
     """Benchmark different num_workers on the real training dataset and return the best."""
     import time
 
-    try:
-        import torch.distributed as dist
-        is_rank0 = not dist.is_initialized() or dist.get_rank() == 0
-    except Exception:
-        is_rank0 = True
+    show_progress = world_size <= 1 or rank == 0
 
     total_samples = len(train_dataset)
     actual_batches = min(num_batches, max(1, total_samples // batch_size))
     if actual_batches < 2:
-        if is_rank0:
+        if show_progress:
             console.print(
                 "[yellow]Worker calibration skipped: dataset too small "
                 f"({total_samples} samples, batch_size {batch_size})[/yellow]"
@@ -790,7 +789,7 @@ def _calibrate_num_workers_on_dataset(
     best_throughput = 0.0
     results: list[tuple[int, float]] = []
 
-    if is_rank0:
+    if show_progress:
         console.print("[bold]Worker calibration (on real data):[/bold] starting…")
     progress_columns = (
         TextColumn("[bold blue]Worker calibration[/]"),
@@ -799,7 +798,7 @@ def _calibrate_num_workers_on_dataset(
         TextColumn("•"),
         TimeElapsedColumn(),
     )
-    if is_rank0:
+    if show_progress:
         with Progress(*progress_columns, console=console) as progress:
             task = progress.add_task("calibrating", total=len(candidates))
             for nw in candidates:
@@ -850,7 +849,7 @@ def _calibrate_num_workers_on_dataset(
                 best_throughput = throughput
                 best_nw = nw
 
-    if is_rank0:
+    if show_progress:
         console.print("[bold]Worker calibration (on real data):[/bold]")
         for nw, tp in results:
             mark = " ← best" if nw == best_nw else ""
@@ -1105,10 +1104,15 @@ def train(cfg: Config) -> None:
     train_val_msg = f"Train: {len(train_dataset)} samples, Val: {len(val_dataset)} samples"
 
     if cfg.data.calibrate_workers:
+        if world_size > 1:
+            import torch.distributed as dist
+            dist.barrier()  # Sync so rank 1 doesn't interleave output with rank 0's progress bar
         num_workers = _calibrate_num_workers_on_dataset(
             train_dataset,
             batch_size=cfg.data.batch_size,
             prefetch_factor=cfg.data.prefetch_factor,
+            rank=rank,
+            world_size=world_size,
         )
         if cfg.data.external_cache and external_cache_max_mb > 0:
             _wrap_external_with_cache(train_dataset, external_cache_max_mb, num_workers)
@@ -1395,6 +1399,9 @@ def train(cfg: Config) -> None:
 
     # --- Training loop ---
     best_val_accuracy = resume_ckpt.get("val_accuracy", 0.0) if resume_ckpt else 0.0
+
+    if rank == 0:
+        console.print("[dim]Starting epoch loop (first batch may take a few minutes with large datasets)…[/dim]")
 
     for epoch in range(start_epoch, tc.epochs):
         # Repeated augmentation: set epoch for reproducible shuffle

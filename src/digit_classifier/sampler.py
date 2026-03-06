@@ -324,14 +324,15 @@ class RepeatAugRatioBatchSampler:
 
     def __len__(self) -> int:
         """Number of batches per epoch. Stops when primary (repeated) is exhausted."""
-        orig_len = self.original_count * self.num_repeats
+        # Per-replica primary length when using DDP (each rank gets 1/num_replicas of data)
+        orig_per_replica = (self.original_count + self.num_replicas - 1) // self.num_replicas
+        orig_len = orig_per_replica * self.num_repeats
         if self.drop_last:
             if self.external_count == 0:
                 return orig_len // self.batch_size
             return orig_len // self.k_primary
         if self.external_count == 0:
-            total = orig_len + self.external_count * self.num_repeats
-            return -(-total // self.batch_size)
+            return -(-orig_len // self.batch_size)
         return -(-orig_len // self.k_primary)
 
     def set_epoch(self, epoch: int) -> None:
