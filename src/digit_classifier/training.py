@@ -1405,7 +1405,9 @@ def train(cfg: Config) -> None:
     # --- Training loop ---
     best_val_accuracy = resume_ckpt.get("val_accuracy", 0.0) if resume_ckpt else 0.0
 
-    if rank == 0:
+    if world_size > 1:
+        console.print(f"[dim]Rank {rank}/{world_size} reached epoch loop[/dim]")
+    elif rank == 0:
         console.print("[dim]Starting epoch loop (first batch may take a few minutes with large datasets)…[/dim]")
 
     for epoch in range(start_epoch, tc.epochs):
