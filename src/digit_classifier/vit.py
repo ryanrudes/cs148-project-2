@@ -340,6 +340,16 @@ def _register_builder(name: str):
     return decorator
 
 
+def _patch_size_for_image_size(image_size: int, deit_model: str) -> int:
+    """Choose patch size from image size. Prefer standard sizes; require grid >= 4 per side."""
+    # Huge uses 14 by convention; others prefer 16
+    candidates = [14, 16, 8, 4, 2] if deit_model == "huge" else [16, 14, 8, 4, 2]
+    for p in candidates:
+        if image_size % p == 0 and image_size // p >= 4:
+            return p
+    return 16  # fallback
+
+
 @_register_builder("tiny")
 def deit3_tiny_patch16_224(
     num_classes: int = 10,
@@ -347,10 +357,12 @@ def deit3_tiny_patch16_224(
     image_size: int = 224,
     use_flash_attention: bool = False,
     init_values: float | None = None,
+    patch_size: int | None = None,
 ) -> DeiT3:
+    ps = patch_size if patch_size is not None else _patch_size_for_image_size(image_size, "tiny")
     cfg = DeiTConfig(
         hidden_size=192, depth=12, num_heads=3, num_classes=num_classes,
-        image_size=image_size,
+        image_size=image_size, patch_size=ps,
         use_flash_attention=use_flash_attention,
     )
     if drop_path_rate is not None:
@@ -367,10 +379,12 @@ def deit3_small_patch16_224(
     image_size: int = 224,
     use_flash_attention: bool = False,
     init_values: float | None = None,
+    patch_size: int | None = None,
 ) -> DeiT3:
+    ps = patch_size if patch_size is not None else _patch_size_for_image_size(image_size, "small")
     cfg = DeiTConfig(
         hidden_size=384, depth=12, num_heads=6, num_classes=num_classes,
-        image_size=image_size,
+        image_size=image_size, patch_size=ps,
         use_flash_attention=use_flash_attention,
     )
     if drop_path_rate is not None:
@@ -387,10 +401,12 @@ def deit3_base_patch16_224(
     image_size: int = 224,
     use_flash_attention: bool = False,
     init_values: float | None = None,
+    patch_size: int | None = None,
 ) -> DeiT3:
+    ps = patch_size if patch_size is not None else _patch_size_for_image_size(image_size, "base")
     cfg = DeiTConfig(
         hidden_size=768, depth=12, num_heads=12, num_classes=num_classes,
-        image_size=image_size,
+        image_size=image_size, patch_size=ps,
         use_flash_attention=use_flash_attention,
     )
     if drop_path_rate is not None:
@@ -407,11 +423,13 @@ def deit3_large_patch16_224(
     image_size: int = 224,
     use_flash_attention: bool = False,
     init_values: float | None = None,
+    patch_size: int | None = None,
 ) -> DeiT3:
     """DeiT-III large: 1024-dim, 24 layers, 16 heads (DeiT-III paper)."""
+    ps = patch_size if patch_size is not None else _patch_size_for_image_size(image_size, "large")
     cfg = DeiTConfig(
         hidden_size=1024, depth=24, num_heads=16, num_classes=num_classes,
-        image_size=image_size,
+        image_size=image_size, patch_size=ps,
         use_flash_attention=use_flash_attention,
     )
     if drop_path_rate is not None:
@@ -428,12 +446,13 @@ def deit3_huge_patch14_224(
     image_size: int = 224,
     use_flash_attention: bool = False,
     init_values: float | None = None,
+    patch_size: int | None = None,
 ) -> DeiT3:
     """DeiT-III huge: 1280-dim, 32 layers, 16 heads, patch14 (DeiT-III paper)."""
+    ps = patch_size if patch_size is not None else _patch_size_for_image_size(image_size, "huge")
     cfg = DeiTConfig(
         hidden_size=1280, depth=32, num_heads=16, num_classes=num_classes,
-        image_size=image_size,
-        patch_size=14,
+        image_size=image_size, patch_size=ps,
         use_flash_attention=use_flash_attention,
     )
     if drop_path_rate is not None:
@@ -450,8 +469,15 @@ def build_deit3(
     image_size: int = 224,
     use_flash_attention: bool = False,
     init_values: float | None = None,
+    patch_size: int | None = None,
 ) -> DeiT3:
-    """Build a DeiT-III model by size name (tiny, small, base, large, huge)."""
+    """Build a DeiT-III model by size name (tiny, small, base, large, huge).
+
+    If patch_size is None, it is chosen automatically from image_size (huge prefers 14,
+    others prefer 16; smallest patch that divides image_size with grid >= 4 per side).
+    When loading from checkpoint for fine-tuning, pass the checkpoint's patch_size to
+    preserve the architecture.
+    """
     if size not in DEIT_BUILDERS:
         raise ValueError(f"Unknown deit_model '{size}'. Choose from: {list(DEIT_BUILDERS)}")
     return DEIT_BUILDERS[size](
@@ -460,6 +486,7 @@ def build_deit3(
         image_size=image_size,
         use_flash_attention=use_flash_attention,
         init_values=init_values,
+        patch_size=patch_size,
     )
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ def test_replace_best_checkpoint_overwrites_on_disk(monkeypatch, tmp_path):
     monkeypatch.setattr(
         training,
         "build_deit3",
-        lambda size, num_classes=10, drop_path_rate=None, image_size=224, use_flash_attention=False, init_values=None: _TinyModel(num_classes),
+        lambda size, num_classes=10, drop_path_rate=None, image_size=224, use_flash_attention=False, init_values=None, patch_size=None, **kwargs: _TinyModel(num_classes),
     )
 
     # Return improving val accuracy so we save multiple "bests"
@@ -123,7 +123,7 @@ def test_replace_best_checkpoint_deletes_previous_wandb_artifact(monkeypatch):
     monkeypatch.setattr(
         training,
         "build_deit3",
-        lambda size, num_classes=10, drop_path_rate=None, image_size=224, use_flash_attention=False, init_values=None: _TinyModel(num_classes),
+        lambda size, num_classes=10, drop_path_rate=None, image_size=224, use_flash_attention=False, init_values=None, patch_size=None, **kwargs: _TinyModel(num_classes),
     )
 
     # Return improving val accuracy: first save at epoch 1, second at epoch 2
@@ -231,7 +231,7 @@ def test_accumulate_best_checkpoint_does_not_delete(monkeypatch):
     monkeypatch.setattr(
         training,
         "build_deit3",
-        lambda size, num_classes=10, drop_path_rate=None, image_size=224, use_flash_attention=False, init_values=None: _TinyModel(num_classes),
+        lambda size, num_classes=10, drop_path_rate=None, image_size=224, use_flash_attention=False, init_values=None, patch_size=None, **kwargs: _TinyModel(num_classes),
     )
 
     val_accs = [0.1, 0.6, 0.95]

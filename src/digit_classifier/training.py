@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterator
+from dataclasses import asdict
 import sys
 import threading
 from contextlib import nullcontext
@@ -208,7 +209,27 @@ def _get_param_groups(
 # Warm-restart epoch computation
 # ---------------------------------------------------------------------------
 
-def _get_model_config_for_checkpoint(mc, image_size: int) -> dict:
+def _config_to_wandb_dict(cfg: Config) -> dict:
+    """Flatten all config into wandb-friendly dict with prefixed keys for sweep plots."""
+    out: dict = {}
+    for section, obj in [
+        ("data", cfg.data),
+        ("model", cfg.model),
+        ("augment", cfg.augment),
+        ("training", cfg.training),
+    ]:
+        d = asdict(obj)
+        for k, v in d.items():
+            if k == "gdrive_url":
+                continue  # skip long URL
+            key = f"{section}/{k}"
+            if isinstance(v, tuple):
+                v = list(v)
+            out[key] = v
+    return out
+
+
+def _get_model_config_for_checkpoint(mc, image_size: int, patch_size: int | None = None) -> dict:
     """Build model_config dict with only params relevant to the model type."""
     base = {"num_classes": mc.num_classes}
     if mc.model_type == "resnext":
@@ -218,9 +239,12 @@ def _get_model_config_for_checkpoint(mc, image_size: int) -> dict:
             "width_per_group": mc.width_per_group,
         })
     else:
+        from digit_classifier.vit import _patch_size_for_image_size
+        ps = patch_size if patch_size is not None else _patch_size_for_image_size(image_size, mc.deit_model)
         base.update({
             "deit_model": mc.deit_model,
             "image_size": image_size,
+            "patch_size": ps,
         })
     return base
 
@@ -292,13 +316,15 @@ def build_model_from_checkpoint(
         ckpt_image_size = config.get("image_size", 224)
         effective_image_size = target_image_size if target_image_size is not None else ckpt_image_size
 
+        ckpt_patch_size = config.get("patch_size")
+        if ckpt_patch_size is None:
+            ckpt_patch_size = 14 if config.get("deit_model", "base") == "huge" else 16
         if ckpt_image_size != effective_image_size and "pos_embed" in stripped:
-            patch_size = 14 if config.get("deit_model", "base") == "huge" else 16
             stripped["pos_embed"] = resize_pos_embed(
                 stripped["pos_embed"],
                 orig_size=ckpt_image_size,
                 new_size=effective_image_size,
-                patch_size=patch_size,
+                patch_size=ckpt_patch_size,
             )
 
         model = build_deit3(
@@ -306,6 +332,7 @@ def build_model_from_checkpoint(
             num_classes=num_classes,
             drop_path_rate=0.0,
             image_size=effective_image_size,
+            patch_size=ckpt_patch_size,
         ).to(device)
 
     model_keys = set(model.state_dict().keys())
@@ -1218,6 +1245,14 @@ def train(cfg: Config) -> None:
                 cuda_be.enable_flash_sdp(True)
             except Exception:
                 pass
+    pretrain_patch_size: int | None = None
+    if tc.pretrain_path and mc.model_type == "deit":
+        pretrain_ckpt = torch.load(tc.pretrain_path, map_location=device, weights_only=False)
+        pc = pretrain_ckpt.get("model_config", {})
+        pretrain_patch_size = pc.get("patch_size")
+        if pretrain_patch_size is None:
+            pretrain_patch_size = 14 if pc.get("deit_model", "base") == "huge" else 16
+
     if mc.model_type == "resnext":
         model_name = "ResNeXt"
         model = ResNeXt(
@@ -1236,9 +1271,14 @@ def train(cfg: Config) -> None:
             image_size=cfg.data.image_size,
             use_flash_attention=use_flash_attention,
             init_values=mc.layer_scale_init,
+            patch_size=pretrain_patch_size,
         ).to(device)
     if world_size > 1:
         console.print(f"[dim]Rank {rank}/{world_size}: model built[/dim]")
+    if rank == 0 and mc.model_type == "deit":
+        deit = _get_deit_model(model)
+        if deit is not None:
+            console.print(f"[dim]DeiT image_size={cfg.data.image_size}, patch_size={deit.config.patch_size}[/dim]")
 
     start_epoch = 0
     resume_ckpt: dict | None = None
@@ -1252,12 +1292,14 @@ def train(cfg: Config) -> None:
         ckpt_image_size = ckpt_config.get("image_size", 224)
         if mc.model_type == "deit" and ckpt_image_size != cfg.data.image_size and "pos_embed" in stripped:
             from digit_classifier.vit import resize_pos_embed
-            patch_size = 14 if ckpt_config.get("deit_model", "base") == "huge" else 16
+            ckpt_patch_size = ckpt_config.get("patch_size")
+            if ckpt_patch_size is None:
+                ckpt_patch_size = 14 if ckpt_config.get("deit_model", "base") == "huge" else 16
             stripped["pos_embed"] = resize_pos_embed(
                 stripped["pos_embed"],
                 orig_size=ckpt_image_size,
                 new_size=cfg.data.image_size,
-                patch_size=patch_size,
+                patch_size=ckpt_patch_size,
             )
         model_keys = set(model.state_dict().keys())
         filtered = {k: v for k, v in stripped.items() if k in model_keys}
@@ -1409,29 +1451,30 @@ def train(cfg: Config) -> None:
     effective_batch_size = cfg.data.batch_size
 
     if tc.wandb_enabled and rank == 0:
-        wandb_config = {
-            "dataset": cfg.data.dataset_name,
+        wandb_config = _config_to_wandb_dict(cfg)
+        # Runtime / resolved values (override or add to config)
+        wandb_config.update({
             "model": model_name,
             "optimizer": optimizer.__class__.__name__,
-            "lr": tc.lr,
             "batch_size": effective_batch_size,
-            "epochs": tc.epochs,
             "device": device_name,
-        }
-        # Log only model-relevant params
-        if mc.model_type == "resnext":
-            wandb_config.update({"layers": list(mc.layers), "groups": mc.groups, "width_per_group": mc.width_per_group})
-        else:
-            wandb_config.update({"deit_model": mc.deit_model})
+            "num_workers": num_workers,
+            "world_size": world_size,
+        })
+        if mc.model_type == "deit":
+            deit = _get_deit_model(model)
+            if deit is not None:
+                wandb_config["patch_size"] = deit.config.patch_size
+        wandb_config["mean"] = mean
+        wandb_config["std"] = std
+        if compile_profiling is not None:
+            wandb_config.update(compile_profiling)
         wandb.init(project=tc.wandb_project, config=wandb_config)
         if tc.wandb_watch and tc.wandb_watch != "none":
             wandb.watch(model, log=tc.wandb_watch, log_freq=100)
         if tc.checkpoint_enabled:
             checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
             os.makedirs(checkpoint_dir, exist_ok=True)
-        wandb.config.update({"mean": mean, "std": std})
-        if compile_profiling is not None:
-            wandb.config.update(compile_profiling)
     else:
         if tc.checkpoint_enabled and rank == 0:
             checkpoint_dir = "checkpoints/local"
@@ -1517,7 +1560,7 @@ def train(cfg: Config) -> None:
         else:
             prefetched = None
 
-        do_validate = (epoch + 1) % tc.val_every_n_epochs == 0 or epoch == tc.epochs - 1
+        do_validate = epoch == 0 or (epoch + 1) % tc.val_every_n_epochs == 0 or epoch == tc.epochs - 1
         if do_validate:
             val_metrics_raw = validate(
                 model, val_loader, val_criterion, metrics, device,

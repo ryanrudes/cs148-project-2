@@ -213,7 +213,7 @@ def test_train_runs_with_repeat_aug_and_external_data(monkeypatch):
     monkeypatch.setattr(
         training,
         "build_deit3",
-        lambda size, num_classes=10, drop_path_rate=None, image_size=224, use_flash_attention=False, init_values=None: _TinyModel(num_classes),
+        lambda size, num_classes=10, drop_path_rate=None, image_size=224, use_flash_attention=False, init_values=None, patch_size=None, **kwargs: _TinyModel(num_classes),
     )
 
     class FakeWandb:
