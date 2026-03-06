@@ -133,12 +133,14 @@ python -m digit_classifier train
 
 Use `torchrun` to train on multiple GPUs. Batch size is per-GPU; learning rate is scaled linearly by world size.
 
+Use the `-m` flag so torchrun runs `python -m digit_classifier` (the standard way for pip-installed packages):
+
 ```bash
 # 2 GPUs on one node
-torchrun --nproc_per_node=2 python -m digit_classifier train --epochs 900
+torchrun --nproc_per_node=2 -m digit_classifier train --epochs 900
 
 # 4 GPUs
-torchrun --nproc_per_node=4 python -m digit_classifier train
+torchrun --nproc_per_node=4 -m digit_classifier train
 ```
 
 ## Pareidolia test dataset
