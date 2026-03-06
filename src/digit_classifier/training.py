@@ -229,6 +229,12 @@ def _config_to_wandb_dict(cfg: Config) -> dict:
     return out
 
 
+def _get_patch_size_from_model(model: nn.Module) -> int | None:
+    """Get patch size from DeiT model config. Returns None for non-DeiT."""
+    deit = _get_deit_model(model)
+    return deit.config.patch_size if deit is not None else None
+
+
 def _get_model_config_for_checkpoint(mc, image_size: int, patch_size: int | None = None) -> dict:
     """Build model_config dict with only params relevant to the model type."""
     base = {"num_classes": mc.num_classes}
@@ -294,6 +300,17 @@ def _infer_model_type_from_state_dict(state_dict: dict) -> str:
     if any(k.startswith("blocks.") for k in keys):
         return "deit"
     return "resnext"
+
+
+def _infer_patch_size_from_state_dict(state_dict: dict) -> int | None:
+    """Infer patch size from patch_embed.proj.weight shape (C, 3, P, P). Returns None if not found."""
+    for prefix in ("", "module.", "_orig_mod."):
+        k = prefix + "patch_embed.proj.weight"
+        if k in state_dict:
+            w = state_dict[k]
+            if w.ndim == 4 and w.shape[2] == w.shape[3]:
+                return int(w.shape[2])
+    return None
 
 
 def build_model_from_checkpoint(
@@ -1278,10 +1295,14 @@ def train(cfg: Config) -> None:
             patch_size_for_build = 14 if pc.get("deit_model", "base") == "huge" else 16
     elif tc.resume_path and mc.model_type == "deit":
         resume_preview = torch.load(tc.resume_path, map_location=device, weights_only=False)
-        rc = resume_preview.get("model_config", {})
-        patch_size_for_build = rc.get("patch_size")
+        state = resume_preview.get("ema_state_dict", resume_preview.get("model_state_dict"))
+        # Infer from state dict (source of truth); config may have wrong patch_size if saved before fix
+        patch_size_for_build = _infer_patch_size_from_state_dict(state) if state else None
         if patch_size_for_build is None:
-            patch_size_for_build = 14 if rc.get("deit_model", "base") == "huge" else 16
+            rc = resume_preview.get("model_config", {})
+            patch_size_for_build = rc.get("patch_size")
+            if patch_size_for_build is None:
+                patch_size_for_build = 14 if rc.get("deit_model", "base") == "huge" else 16
 
     if mc.model_type == "resnext":
         model_name = "ResNeXt"
@@ -1652,7 +1673,8 @@ def train(cfg: Config) -> None:
             ckpt_root = checkpoint_dir if "checkpoint_dir" in dir() else "checkpoints"
             os.makedirs(ckpt_root, exist_ok=True)
             pre_path = os.path.join(ckpt_root, f"pre_restart_epoch_{epoch + 1}.pt")
-            model_state = (model.module if hasattr(model, "module") else model).state_dict()
+            model_for_save = model.module if hasattr(model, "module") else model
+            model_state = model_for_save.state_dict()
             save_dict: dict[str, object] = {
                 "epoch": epoch + 1,
                 "model_state_dict": model_state,
@@ -1660,7 +1682,9 @@ def train(cfg: Config) -> None:
                 "scheduler_state_dict": scheduler.state_dict(),
                 "val_accuracy": val_metrics_ema.get("accuracy"),
                 "model_type": mc.model_type,
-                "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
+                "model_config": _get_model_config_for_checkpoint(
+                    mc, cfg.data.image_size, patch_size=_get_patch_size_from_model(model_for_save)
+                ),
             }
             if ema is not None:
                 save_dict["ema_state_dict"] = ema.state_dict()
@@ -1721,7 +1745,8 @@ def train(cfg: Config) -> None:
             best_val_accuracy = val_accuracy
             if tc.checkpoint_enabled and rank == 0:
                 ckpt_path = os.path.join(checkpoint_dir, "best.pt")
-                model_state = (model.module if hasattr(model, "module") else model).state_dict()
+                model_for_save = model.module if hasattr(model, "module") else model
+                model_state = model_for_save.state_dict()
                 save_dict = {
                     "epoch": epoch + 1,
                     "model_state_dict": model_state,
@@ -1729,7 +1754,9 @@ def train(cfg: Config) -> None:
                     "scheduler_state_dict": scheduler.state_dict(),
                     "val_accuracy": val_accuracy,
                     "model_type": mc.model_type,
-                    "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
+                    "model_config": _get_model_config_for_checkpoint(
+                        mc, cfg.data.image_size, patch_size=_get_patch_size_from_model(model_for_save)
+                    ),
                 }
                 if ema is not None:
                     save_dict["ema_state_dict"] = ema.state_dict()
@@ -1764,7 +1791,8 @@ def train(cfg: Config) -> None:
             best_test_accuracy = test_accuracy
             if tc.checkpoint_enabled and rank == 0:
                 ckpt_path_test = os.path.join(checkpoint_dir, "best_test.pt")
-                model_state_test = (model.module if hasattr(model, "module") else model).state_dict()
+                model_for_save_test = model.module if hasattr(model, "module") else model
+                model_state_test = model_for_save_test.state_dict()
                 val_acc_for_test = val_metrics_ema["accuracy"]
                 save_dict_test = {
                     "epoch": epoch + 1,
@@ -1774,7 +1802,9 @@ def train(cfg: Config) -> None:
                     "val_accuracy": val_acc_for_test,
                     "test_accuracy": test_accuracy,
                     "model_type": mc.model_type,
-                    "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
+                    "model_config": _get_model_config_for_checkpoint(
+                        mc, cfg.data.image_size, patch_size=_get_patch_size_from_model(model_for_save_test)
+                    ),
                 }
                 if ema is not None:
                     save_dict_test["ema_state_dict"] = ema.state_dict()
@@ -1806,7 +1836,8 @@ def train(cfg: Config) -> None:
         # --- Latest checkpoint (every epoch, always overwrite) ---
         if tc.checkpoint_latest and tc.checkpoint_enabled and rank == 0:
             ckpt_path_latest = os.path.join(checkpoint_dir, "latest.pt")
-            model_state_latest = (model.module if hasattr(model, "module") else model).state_dict()
+            model_for_save_latest = model.module if hasattr(model, "module") else model
+            model_state_latest = model_for_save_latest.state_dict()
             val_acc_latest = val_metrics_ema.get("accuracy") if do_validate else None
             save_dict_latest = {
                 "epoch": epoch + 1,
@@ -1815,7 +1846,9 @@ def train(cfg: Config) -> None:
                 "scheduler_state_dict": scheduler.state_dict(),
                 "val_accuracy": val_acc_latest,
                 "model_type": mc.model_type,
-                "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
+                "model_config": _get_model_config_for_checkpoint(
+                    mc, cfg.data.image_size, patch_size=_get_patch_size_from_model(model_for_save_latest)
+                ),
             }
             if ema is not None:
                 save_dict_latest["ema_state_dict"] = ema.state_dict()
