@@ -12,7 +12,9 @@ Preserves every behavioural invariant from the original pipeline:
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Iterator
 import sys
+import threading
 from contextlib import nullcontext
 from multiprocessing import cpu_count, freeze_support
 
@@ -403,6 +405,8 @@ def train_epoch(
     show_data_wait: bool = False,
     epoch: int = 0,
     total_epochs: int = 1,
+    prefetched: tuple[Iterator, tuple[Tensor, Tensor]] | None = None,
+    on_last_batch_start: Callable[[], None] | None = None,
 ) -> dict[str, float]:
     """Run one training epoch and return computed metrics + loss."""
     import time
@@ -447,18 +451,27 @@ def train_epoch(
                 wait_pct=0.0,
             )
 
-        loader_iter = iter(loader)
+        if prefetched is not None:
+            loader_iter, (images, labels) = prefetched
+        else:
+            loader_iter = iter(loader)
+            images, labels = None, None
         data_time = 0.0
         compute_time = 0.0
 
         for batch_idx in range(total_batches):
-            t0 = time.perf_counter()
-            try:
-                images, labels = next(loader_iter)
-            except StopIteration:
-                break
-            t1 = time.perf_counter()
-            data_time += t1 - t0
+            if batch_idx == total_batches - 1 and on_last_batch_start is not None:
+                on_last_batch_start()
+            if images is None:
+                t0 = time.perf_counter()
+                try:
+                    images, labels = next(loader_iter)
+                except StopIteration:
+                    break
+                t1 = time.perf_counter()
+                data_time += t1 - t0
+            else:
+                t0 = t1 = time.perf_counter()
 
             if device.type == "cuda":
                 torch.cuda.synchronize()
@@ -503,6 +516,8 @@ def train_epoch(
                 total = data_time + compute_time
                 wait_pct = (data_time / total * 100) if total > 0 else 0.0
                 progress.update(task, advance=1, loss=running_loss, wait_pct=wait_pct)
+
+            images, labels = None, None  # Consumed; fetch next on next iteration
 
     result = _compute_and_reset(metrics)
     result["cross_entropy"] = running_loss
@@ -1430,6 +1445,7 @@ def train(cfg: Config) -> None:
     elif rank == 0:
         console.print("[dim]Starting epoch loop (first batch may take a few minutes with large datasets)…[/dim]")
 
+    prefetched: tuple[Iterator, tuple[Tensor, Tensor]] | None = None
     for epoch in range(start_epoch, tc.epochs):
         # Repeated augmentation: set epoch for reproducible shuffle
         loader_sampler = getattr(train_loader, "sampler", None) or getattr(
@@ -1457,6 +1473,28 @@ def train(cfg: Config) -> None:
             label_smoothing=tc.label_smoothing,
         )
 
+        # Prefetch next epoch's first batch during last batch's compute (overlaps regardless of validation)
+        prefetch_out: dict = {}
+        if epoch + 1 < tc.epochs and loader_sampler is not None and hasattr(loader_sampler, "set_epoch"):
+
+            def _on_last_batch_start() -> None:
+                def _prefetch() -> None:
+                    loader_sampler.set_epoch(epoch + 1)
+                    it = iter(train_loader)
+                    try:
+                        batch = next(it)
+                        prefetch_out["result"] = (it, batch)
+                    except StopIteration:
+                        pass
+
+                t = threading.Thread(target=_prefetch)
+                t.start()
+                prefetch_out["thread"] = t
+
+            on_last_batch = _on_last_batch_start
+        else:
+            on_last_batch = None
+
         train_metrics = train_epoch(
             model, train_loader, train_criterion, optimizer, metrics, scaler,
             device, mixup_fn=active_mixup, ema=ema, grad_clip_norm=tc.grad_clip_norm,
@@ -1466,8 +1504,17 @@ def train(cfg: Config) -> None:
             show_data_wait=tc.show_data_wait and rank == 0,
             epoch=epoch,
             total_epochs=tc.epochs,
+            prefetched=prefetched,
+            on_last_batch_start=on_last_batch,
         )
         train_metrics = _all_reduce_metrics(train_metrics, device, world_size)
+
+        if "thread" in prefetch_out:
+            prefetch_out["thread"].join()
+            prefetched = prefetch_out.get("result")
+        else:
+            prefetched = None
+
         do_validate = (epoch + 1) % tc.val_every_n_epochs == 0 or epoch == tc.epochs - 1
         if do_validate:
             val_metrics_raw = validate(
