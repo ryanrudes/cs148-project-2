@@ -1439,6 +1439,7 @@ def train(cfg: Config) -> None:
 
     # --- Training loop ---
     best_val_accuracy = resume_ckpt.get("val_accuracy", 0.0) if resume_ckpt else 0.0
+    pending_async: list[threading.Thread] = []  # wandb.log and checkpoint saves run async
 
     if world_size > 1:
         console.print(f"[dim]Rank {rank}/{world_size} reached epoch loop[/dim]")
@@ -1570,17 +1571,22 @@ def train(cfg: Config) -> None:
             }
             if ema is not None:
                 save_dict["ema_state_dict"] = ema.state_dict()
-            torch.save(save_dict, pre_path)
-            console.print(f"[magenta]Saved pre-restart checkpoint:[/magenta] {pre_path}")
 
-            if tc.wandb_enabled:
-                try:
-                    art = wandb.Artifact(f"pre-restart-epoch-{epoch + 1}", type="model",
-                                         metadata={"epoch": epoch + 1, "val_accuracy": val_metrics_ema.get("accuracy")})
-                    art.add_file(pre_path)
-                    wandb.log_artifact(art)
-                except Exception:
-                    pass
+            def _save_pre_restart():
+                torch.save(save_dict, pre_path)
+                if tc.wandb_enabled:
+                    try:
+                        art = wandb.Artifact(f"pre-restart-epoch-{epoch + 1}", type="model",
+                                             metadata={"epoch": epoch + 1, "val_accuracy": val_metrics_ema.get("accuracy")})
+                        art.add_file(pre_path)
+                        wandb.log_artifact(art)
+                    except Exception:
+                        pass
+
+            t = threading.Thread(target=_save_pre_restart)
+            t.start()
+            pending_async.append(t)
+            console.print(f"[magenta]Saved pre-restart checkpoint:[/magenta] {pre_path}")
 
         scheduler.step()
 
@@ -1607,7 +1613,11 @@ def train(cfg: Config) -> None:
             if test_metrics_ema is not None:
                 prefix = "test_ema" if ema is not None else "test"
                 log_dict.update({f"{prefix}/{k}": v for k, v in test_metrics_ema.items()})
-            wandb.log(log_dict)
+            def _log():
+                wandb.log(log_dict)
+            t = threading.Thread(target=_log)
+            t.start()
+            pending_async.append(t)
 
         # --- Best-model checkpoint (only when we ran validation) ---
         if do_validate:
@@ -1630,27 +1640,34 @@ def train(cfg: Config) -> None:
                 }
                 if ema is not None:
                     save_dict["ema_state_dict"] = ema.state_dict()
-                torch.save(save_dict, ckpt_path)
 
-                if tc.wandb_enabled:
-                    art_name = f"model-best-{wandb.run.id}"
-                    if tc.replace_best_checkpoint:
-                        try:
-                            api = wandb.Api()
-                            prev = api.artifact(
-                                f"{wandb.run.entity}/{wandb.run.project}/{art_name}:best",
-                                type="model",
-                            )
-                            prev.delete(delete_aliases=True)
-                        except Exception:
-                            pass  # no previous artifact or not found
-                    art = wandb.Artifact(art_name, type="model",
-                                         metadata={"epoch": epoch + 1, "val_accuracy": val_accuracy})
-                    art.add_file(ckpt_path)
-                    wandb.log_artifact(art, aliases=["best"])
+                def _save_best():
+                    torch.save(save_dict, ckpt_path)
+                    if tc.wandb_enabled:
+                        art_name = f"model-best-{wandb.run.id}"
+                        if tc.replace_best_checkpoint:
+                            try:
+                                api = wandb.Api()
+                                prev = api.artifact(
+                                    f"{wandb.run.entity}/{wandb.run.project}/{art_name}:best",
+                                    type="model",
+                                )
+                                prev.delete(delete_aliases=True)
+                            except Exception:
+                                pass  # no previous artifact or not found
+                        art = wandb.Artifact(art_name, type="model",
+                                             metadata={"epoch": epoch + 1, "val_accuracy": val_accuracy})
+                        art.add_file(ckpt_path)
+                        wandb.log_artifact(art, aliases=["best"])
 
+                t = threading.Thread(target=_save_best)
+                t.start()
+                pending_async.append(t)
                 console.print(f"[green]Saved best model (val_accuracy={val_accuracy:.4f}) at epoch {epoch + 1}[/green]")
 
+    if rank == 0:
+        for t in pending_async:
+            t.join()
     if tc.wandb_enabled and rank == 0:
         wandb.finish()
     if rank == 0:
