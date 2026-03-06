@@ -176,7 +176,7 @@ python -m digit_classifier train --test-dataset dataset_out
 |---|---|
 | `download` | Fetch the raw JPEG archive from Google Drive |
 | `preprocess` | Resize, colour-convert, compute mean/std and cache as `.npz` |
-| `train` | Run the full training pipeline |
+| `train` | Run the full training pipeline (see [docs/FINETUNING.md](docs/FINETUNING.md) for `--pretrain` best practices) |
 | `infer` | Real-time webcam digit recognition (uses EMA; pass `--mean`/`--std` if checkpoint lacks them) |
 | `export-pipeline` | Compile model + preprocessing into a TorchScript pipeline (uses EMA; pass `--mean`/`--std` if checkpoint lacks them) |
 | `visualize` | Debug-view augmented + mixed-up training batches |

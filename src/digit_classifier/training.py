@@ -269,6 +269,25 @@ def _get_deit_model(model: nn.Module) -> nn.Module | None:
     return m if hasattr(m, "set_drop_path_rate") else None
 
 
+def _filter_state_dict_by_shape(
+    state_dict: dict,
+    model: nn.Module,
+) -> tuple[dict, list[str]]:
+    """Filter state_dict to only include keys with matching shapes. Returns (filtered_dict, skipped_keys)."""
+    model_sd = model.state_dict()
+    filtered = {}
+    skipped = []
+    for k, v in state_dict.items():
+        if k not in model_sd:
+            skipped.append(k)
+            continue
+        if v.shape != model_sd[k].shape:
+            skipped.append(f"{k} (shape {tuple(v.shape)} != {tuple(model_sd[k].shape)})")
+            continue
+        filtered[k] = v
+    return filtered, skipped
+
+
 def _infer_model_type_from_state_dict(state_dict: dict) -> str:
     """Infer model type from state dict keys (for old checkpoints without model_type)."""
     keys = list(state_dict.keys())
@@ -335,9 +354,11 @@ def build_model_from_checkpoint(
             patch_size=ckpt_patch_size,
         ).to(device)
 
-    model_keys = set(model.state_dict().keys())
-    filtered = {k: v for k, v in stripped.items() if k in model_keys}
-    model.load_state_dict(filtered, strict=True)
+    filtered, skipped = _filter_state_dict_by_shape(stripped, model)
+    if skipped:
+        # Common when num_classes differs (head) or architecture changed
+        pass  # load_state_dict with strict=False handles this
+    model.load_state_dict(filtered, strict=False)
     model.eval()
     return model, ckpt
 
@@ -1303,9 +1324,10 @@ def train(cfg: Config) -> None:
                 new_size=cfg.data.image_size,
                 patch_size=ckpt_patch_size,
             )
-        model_keys = set(model.state_dict().keys())
-        filtered = {k: v for k, v in stripped.items() if k in model_keys}
-        model.load_state_dict(filtered, strict=True)
+        filtered, skipped = _filter_state_dict_by_shape(stripped, model)
+        if skipped and rank == 0:
+            console.print(f"[dim]Skipped {len(skipped)} incompatible keys (e.g. head when num_classes differs)[/dim]")
+        model.load_state_dict(filtered, strict=False)
         if rank == 0:
             console.print(f"[bold]Loaded pretrained weights from[/bold] {tc.pretrain_path} (image_size {ckpt_image_size} -> {cfg.data.image_size})")
     elif tc.resume_path:
@@ -1321,8 +1343,12 @@ def train(cfg: Config) -> None:
         if state is None:
             raise KeyError(f"Checkpoint {tc.resume_path} must contain 'ema_state_dict' or 'model_state_dict'")
         stripped = {k.replace("_orig_mod.", "").replace("module.", ""): v for k, v in state.items()}
-        model_keys = set(model.state_dict().keys())
-        filtered = {k: v for k, v in stripped.items() if k in model_keys}
+        filtered, skipped = _filter_state_dict_by_shape(stripped, model)
+        if skipped:
+            raise ValueError(
+                f"Resume checkpoint has incompatible keys (e.g. num_classes or architecture mismatch). "
+                f"Skipped: {skipped[:3]}{'...' if len(skipped) > 3 else ''}"
+            )
         model.load_state_dict(filtered, strict=True)
         start_epoch = resume_ckpt.get("epoch", 0)
         if rank == 0:

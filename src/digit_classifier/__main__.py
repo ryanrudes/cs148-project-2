@@ -458,7 +458,8 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--resume", type=str, default=None,
                     help="Resume training from checkpoint (same resolution; restores optimizer/scheduler)")
     tr.add_argument("--pretrain", type=str, default=None,
-                    help="Fine-tune from checkpoint (load weights only; allows different resolution)")
+                    help="Fine-tune from checkpoint (load weights only; allows different resolution). "
+                         "See docs/FINETUNING.md for recommended --drop-path-rate 0 and --layer-decay 0.65.")
 
     # --- infer ---
     inf = sub.add_parser("infer", help="Run webcam inference")
