@@ -28,11 +28,15 @@ from torch import Tensor
 from torch.amp import GradScaler, autocast
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 from torchmetrics import Accuracy, F1Score, Metric
 
 from digit_classifier.config import Config
-from digit_classifier.external import DEFAULT_EXTERNAL_FRACTIONS
+from digit_classifier.external import (
+    CachedExternalDataset,
+    DEFAULT_EXTERNAL_FRACTIONS,
+    ExternalOnDemandDataset,
+)
 from digit_classifier.loss import BCELossWithSmoothing
 from digit_classifier.mixup import MixupCutmixApply, create_mixup_cutmix
 from digit_classifier.model import ResNeXt
@@ -621,26 +625,23 @@ def _log_epoch_table(
 # Calibration and auto-tuning
 # ---------------------------------------------------------------------------
 
-def _calibrate_num_workers(
+def _calibrate_num_workers_on_dataset(
+    train_dataset: Dataset,
     batch_size: int,
     prefetch_factor: int,
-    image_size: int = 224,
-    num_channels: int = 3,
     num_batches: int = 50,
 ) -> int:
-    """Benchmark different num_workers and return the one with best throughput.
-
-    Uses a synthetic in-memory dataset to measure DataLoader overhead.
-    """
+    """Benchmark different num_workers on the real training dataset and return the best."""
     import time
-    from torch.utils.data import TensorDataset
 
-    # Use smaller images for calibration to avoid excessive memory
-    cal_size = min(image_size, 32)
-    n_samples = num_batches * batch_size * 2  # ensure enough for drop_last
-    fake_images = torch.randn(n_samples, num_channels, cal_size, cal_size, dtype=torch.float32)
-    fake_labels = torch.randint(0, 10, (n_samples,))
-    ds = TensorDataset(fake_images, fake_labels)
+    total_samples = len(train_dataset)
+    actual_batches = min(num_batches, max(1, total_samples // batch_size))
+    if actual_batches < 2:
+        console.print(
+            "[yellow]Worker calibration skipped: dataset too small "
+            f"({total_samples} samples, batch_size {batch_size})[/yellow]"
+        )
+        return min(16, max(1, cpu_count() - 1))
 
     candidates = [0, 4, 8, 16, 24, 32]
     max_workers = max(1, cpu_count() - 1)
@@ -654,7 +655,7 @@ def _calibrate_num_workers(
 
     for nw in candidates:
         loader = DataLoader(
-            ds,
+            train_dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=nw,
@@ -666,7 +667,7 @@ def _calibrate_num_workers(
         count = 0
         for _ in loader:
             count += 1
-            if count >= num_batches:
+            if count >= actual_batches:
                 break
         elapsed = time.perf_counter() - start
         throughput = count * batch_size / elapsed if elapsed > 0 else 0
@@ -675,11 +676,25 @@ def _calibrate_num_workers(
             best_throughput = throughput
             best_nw = nw
 
-    console.print("[bold]Worker calibration:[/bold]")
+    console.print("[bold]Worker calibration (on real data):[/bold]")
     for nw, tp in results:
         mark = " ← best" if nw == best_nw else ""
         console.print(f"  [dim]{nw} workers:[/dim] {tp:.0f} samples/s{mark}")
     return best_nw
+
+
+def _wrap_external_with_cache(
+    train_dataset: Dataset,
+    external_cache_max_mb: float,
+    num_workers: int,
+) -> None:
+    """Wrap ExternalOnDemandDataset entries in train_dataset with CachedExternalDataset (mutates)."""
+    if not isinstance(train_dataset, ConcatDataset) or external_cache_max_mb <= 0:
+        return
+    max_bytes = int((external_cache_max_mb * 1024 * 1024) / max(1, num_workers))
+    for i, ds in enumerate(train_dataset.datasets):
+        if isinstance(ds, ExternalOnDemandDataset):
+            train_dataset.datasets[i] = CachedExternalDataset(ds, max_bytes)
 
 
 def _resolve_external_cache_max_mb(value: float) -> float:
@@ -746,22 +761,18 @@ def train(cfg: Config) -> None:
                     pass
 
     # --- Data ---
-    num_workers = cfg.data.num_workers
-    if cfg.data.calibrate_workers:
-        num_workers = _calibrate_num_workers(
-            batch_size=cfg.data.batch_size,
-            prefetch_factor=cfg.data.prefetch_factor,
-            image_size=cfg.data.image_size,
-            num_channels=3 if cfg.data.color else 1,
-        )
-        console.print(f"Calibrated workers: [cyan]{num_workers}[/cyan]")
-    elif num_workers < 0:
-        num_workers = min(16, max(1, cpu_count() - 1))
-    console.print(f"DataLoader workers: [cyan]{num_workers}[/cyan]")
-
     external_cache_max_mb = _resolve_external_cache_max_mb(cfg.data.external_cache_max_mb)
     if cfg.data.external_cache and cfg.data.external_cache_max_mb < 0:
         console.print(f"External cache (auto): [cyan]{external_cache_max_mb:.0f} MB[/cyan]")
+
+    # When calibrating, build dataset with cache off first so we can benchmark on real data
+    use_cache_for_build = cfg.data.external_cache and not cfg.data.calibrate_workers
+    if use_cache_for_build:
+        num_workers = cfg.data.num_workers
+        if num_workers < 0:
+            num_workers = min(16, max(1, cpu_count() - 1))
+    else:
+        num_workers = 1  # placeholder when cache off (calibrating or no cache)
 
     if cfg.data.external_only:
         if not cfg.data.mix_external:
@@ -771,8 +782,8 @@ def train(cfg: Config) -> None:
             color=cfg.data.color,
             size=cfg.data.image_size,
             seed=cfg.data.split_seed,
-            external_cache=cfg.data.external_cache,
-            external_cache_max_mb=external_cache_max_mb,
+            external_cache=use_cache_for_build,
+            external_cache_max_mb=external_cache_max_mb if use_cache_for_build else 0,
             num_workers=num_workers,
         )
         console.print(f"External-only: {len(train_dataset):,} train / {len(val_dataset):,} val")
@@ -790,11 +801,29 @@ def train(cfg: Config) -> None:
             seed=cfg.data.split_seed,
             augment_cfg=cfg.augment,
             augment_scheme=cfg.data.augment_scheme,
-            external_cache=cfg.data.external_cache,
-            external_cache_max_mb=external_cache_max_mb,
+            external_cache=use_cache_for_build,
+            external_cache_max_mb=external_cache_max_mb if use_cache_for_build else 0,
             num_workers=num_workers,
         )
     console.print(f"Train: {len(train_dataset)} samples, Val: {len(val_dataset)} samples")
+
+    if cfg.data.calibrate_workers:
+        num_workers = _calibrate_num_workers_on_dataset(
+            train_dataset,
+            batch_size=cfg.data.batch_size,
+            prefetch_factor=cfg.data.prefetch_factor,
+        )
+        if cfg.data.external_cache and external_cache_max_mb > 0:
+            _wrap_external_with_cache(train_dataset, external_cache_max_mb, num_workers)
+            console.print(
+                f"  [dim]External cache: {external_cache_max_mb:.0f} MB total "
+                f"({external_cache_max_mb / max(1, num_workers):.0f} MB per worker × {num_workers})[/dim]"
+            )
+    else:
+        num_workers = cfg.data.num_workers
+        if num_workers < 0:
+            num_workers = min(16, max(1, cpu_count() - 1))
+    console.print(f"DataLoader workers: [cyan]{num_workers}[/cyan]")
 
     test_dataset = None
     if cfg.data.test_dataset_path:
