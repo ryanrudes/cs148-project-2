@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import ssl
+from collections import OrderedDict
 from enum import Enum
 
 import numpy as np
@@ -63,6 +64,11 @@ class ExternalDataset(Enum):
 DEFAULT_EXTERNAL_FRACTIONS: dict[ExternalDataset, int] = {
     ds: -1 for ds in ExternalDataset
 }
+
+
+def get_external_only_fractions(val_source: ExternalDataset) -> dict[ExternalDataset, int]:
+    """External fractions for external-only mode: all sources except val_source."""
+    return {ds: -1 for ds in ExternalDataset if ds != val_source}
 
 
 def _dataset_factory(dataset: ExternalDataset) -> datasets.VisionDataset:
@@ -150,6 +156,96 @@ class ExternalOnDemandDataset(Dataset):
 
 
 # ---------------------------------------------------------------------------
+# Memory-bounded LRU cache for external datasets
+# ---------------------------------------------------------------------------
+
+def _tensor_bytes(t: Tensor) -> int:
+    """Return approximate memory size of a tensor in bytes."""
+    return t.numel() * t.element_size()
+
+
+def _get_available_memory_bytes() -> int | None:
+    """Return available system memory in bytes, or None if unavailable.
+
+    Uses psutil when installed; otherwise returns None (no guard).
+    """
+    try:
+        import psutil
+        return psutil.virtual_memory().available
+    except ImportError:
+        return None
+
+
+class CachedExternalDataset(Dataset):
+    """LRU cache wrapper for ExternalOnDemandDataset with a memory budget.
+
+    Caches loaded samples up to *max_bytes* per worker. Evicts least-recently-used
+    entries when the budget is exceeded. When psutil is installed, also evicts
+    aggressively if available system memory falls below *reserve_bytes* to avoid
+    OOM when other processes consume RAM.
+    """
+
+    def __init__(
+        self,
+        underlying: ExternalOnDemandDataset,
+        max_bytes: int,
+        *,
+        reserve_bytes: int = 256 * 1024 * 1024,  # 256 MB headroom for other processes
+    ) -> None:
+        self._underlying = underlying
+        self._max_bytes = max_bytes
+        self._reserve_bytes = reserve_bytes
+        self._cache: OrderedDict[int, tuple[Tensor, int]] = OrderedDict()
+        self._bytes_used = 0
+
+    def __len__(self) -> int:
+        return len(self._underlying)
+
+    def _evict_until_fits(self, entry_size: int) -> None:
+        """Evict LRU entries until we fit within budget and (if checkable) available RAM."""
+        while self._cache:
+            available = _get_available_memory_bytes()
+            over_budget = self._bytes_used + entry_size > self._max_bytes
+            low_available = available is not None and available < entry_size + self._reserve_bytes
+
+            if not over_budget and not low_available:
+                break
+
+            evict_idx = next(iter(self._cache))
+            evict_img, _ = self._cache.pop(evict_idx)
+            self._bytes_used -= _tensor_bytes(evict_img)
+
+            # When available memory is low, evict until we're at 50% of budget
+            # to leave headroom for other processes
+            if low_available and self._bytes_used <= self._max_bytes // 2:
+                break
+
+    def __getitem__(self, idx: int) -> tuple[Tensor, int]:
+        if self._max_bytes <= 0:
+            return self._underlying[idx]
+
+        if idx in self._cache:
+            self._cache.move_to_end(idx)
+            return self._cache[idx]
+
+        img, label = self._underlying[idx]
+        entry_size = _tensor_bytes(img) + 8  # label negligible
+
+        self._evict_until_fits(entry_size)
+
+        # Only cache if within budget and (when checkable) enough system RAM headroom
+        within_budget = self._bytes_used + entry_size <= self._max_bytes
+        available = _get_available_memory_bytes()
+        has_headroom = available is None or available >= entry_size + self._reserve_bytes
+        if within_budget and has_headroom:
+            self._cache[idx] = (img, label)
+            self._cache.move_to_end(idx)
+            self._bytes_used += entry_size
+
+        return img, label
+
+
+# ---------------------------------------------------------------------------
 # NIST-like deduplication
 # ---------------------------------------------------------------------------
 
@@ -189,6 +285,8 @@ def compute_external_manifest_hash(
     size: int,
     seed: int,
     train_fraction: float,
+    external_only: bool = False,
+    val_source: str | None = None,
 ) -> str:
     """Compute a short hex hash that uniquely identifies an external data config.
 
@@ -201,7 +299,10 @@ def compute_external_manifest_hash(
         f"size={size}",
         f"seed={seed}",
         f"frac={train_fraction}",
+        f"ext_only={external_only}",
     ]
+    if val_source is not None:
+        parts.append(f"val={val_source}")
     blob = "|".join(parts).encode()
     return hashlib.sha256(blob).hexdigest()[:12]
 

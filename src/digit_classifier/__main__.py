@@ -55,9 +55,16 @@ def _handle_train(args: argparse.Namespace) -> None:
             repeat_aug_repeats=args.repeat_aug_repeats,
             split_seed=args.seed,
             mix_external=args.mix_external,
+            external_only=getattr(args, "external_only", False),
+            external_val_source=getattr(args, "external_val_source", "MNIST Test"),
             primary_fraction=args.primary_fraction,
             test_dataset_path=args.test_dataset,
             augment_scheme=args.augment_scheme,
+            num_workers=args.num_workers,
+            calibrate_workers=getattr(args, "calibrate_workers", False),
+            prefetch_factor=args.prefetch_factor,
+            external_cache=args.external_cache,
+            external_cache_max_mb=args.external_cache_max_mb,
         ),
         model=ModelConfig(
             model_type=args.model_type,
@@ -101,6 +108,11 @@ def _handle_train(args: argparse.Namespace) -> None:
             wandb_project=args.wandb_project,
             replace_best_checkpoint=args.replace_best_checkpoint,
             checkpoint_enabled=not args.no_checkpoint,
+            val_every_n_epochs=args.val_every_n_epochs,
+            progress_bars=getattr(args, "progress_bars", False),
+            wandb_watch=args.wandb_watch,
+            resume_path=getattr(args, "resume", None),
+            pretrain_path=getattr(args, "pretrain", None),
         ),
     )
     from digit_classifier.training import train
@@ -139,6 +151,8 @@ def _handle_export_pipeline(args: argparse.Namespace) -> None:
         args.checkpoint, dev, model_type=getattr(args, "model_type", None)
     )
 
+    input_size = args.size if args.size is not None else ckpt.get("model_config", {}).get("image_size", 224)
+
     # Determine mean/std: checkpoint > CLI args > fallback 0.5/0.5
     if "mean" in ckpt and "std" in ckpt:
         mean = list(ckpt["mean"])
@@ -161,7 +175,7 @@ def _handle_export_pipeline(args: argparse.Namespace) -> None:
 
     pipeline = DigitClassifierPipeline(
         model=model,
-        input_size=args.size,
+        input_size=input_size,
         input_channels=args.input_channels,
         mean=mean,
         std=std,
@@ -212,7 +226,7 @@ def _handle_eval(args: argparse.Namespace) -> None:
         checkpoint_path=args.checkpoint,
         test_dataset_path=args.test_dataset,
         dataset_name=args.dataset,
-        image_size=args.size,
+        image_size=args.size if args.size is not None else None,
         batch_size=args.batch_size,
         device=args.device,
     )
@@ -271,6 +285,10 @@ def _handle_visualize(args: argparse.Namespace) -> None:
             train_fraction=args.train_fraction,
             split_seed=args.seed,
             augment_scheme=args.augment_scheme,
+            num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
+            external_cache=args.external_cache,
+            external_cache_max_mb=args.external_cache_max_mb,
         ),
         model=ModelConfig(num_classes=args.num_classes),
         training=TrainingConfig(
@@ -326,12 +344,26 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Number of repeats per sample when using repeated augmentation")
     tr.add_argument("--seed", type=int, default=42)
     tr.add_argument("--no-external", dest="mix_external", action="store_false", default=True)
+    tr.add_argument("--external-only", action="store_true",
+                    help="Train only on external data; skip loading primary dataset")
+    tr.add_argument("--external-val-source", type=str, default="MNIST Test",
+                    help="External source for validation when --external-only (e.g. 'MNIST Test')")
     tr.add_argument("--primary-fraction", type=float, default=0.95)
     tr.add_argument("--test-dataset", type=str, default=None,
                     help="Pareidolia output dir (e.g. dataset_out) for test evaluation; no augmentation")
     tr.add_argument("--augment-scheme", default="yolo",
                     choices=["yolo", "three_augment", "autoaugment"],
                     help="Augmentation pipeline: yolo (default), three_augment (DeiT-III), autoaugment (SVHN)")
+    tr.add_argument("--num-workers", type=int, default=-1,
+                    help="DataLoader workers (-1 = auto: cpu_count-1, capped at 16)")
+    tr.add_argument("--prefetch-factor", type=int, default=2,
+                    help="DataLoader prefetch factor per worker")
+    tr.add_argument("--external-cache", action="store_true",
+                    help="Enable LRU cache for external datasets (use with --external-cache-max-mb)")
+    tr.add_argument("--external-cache-max-mb", type=float, default=2048,
+                    help="Max MB for external sample cache (0=disabled, -1=auto from RAM). Use with --external-cache.")
+    tr.add_argument("--calibrate-workers", action="store_true",
+                    help="Benchmark num_workers before training and use the fastest")
     # Model
     tr.add_argument("--model", dest="model_type", type=str, default="deit",
                     choices=["resnext", "deit"],
@@ -383,6 +415,13 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     tr.add_argument("--no-checkpoint", action="store_true",
                     help="Disable saving checkpoints to disk and wandb")
+    tr.add_argument("--val-every-n", dest="val_every_n_epochs", type=int, default=1,
+                    help="Run validation every N epochs (1 = every epoch)")
+    tr.add_argument("--progress-bars", action="store_true",
+                    help="Show Rich progress bars for each epoch's train/val batches")
+    tr.add_argument("--wandb-watch", default="gradients",
+                    choices=["gradients", "all", "none"],
+                    help="wandb.watch mode: gradients, all, or none")
     tr.add_argument("--replace-best-checkpoint", action="store_true", default=True,
                     help="Overwrite best checkpoint on disk and wandb (default)")
     tr.add_argument("--accumulate-best-checkpoints", dest="replace_best_checkpoint", action="store_false",
@@ -391,6 +430,10 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--no-warm-restarts", action="store_true",
                         help="Disable cosine warm-restart scheduler")
     tr.add_argument("--wandb-project", default="CS148-MNIST")
+    tr.add_argument("--resume", type=str, default=None,
+                    help="Resume training from checkpoint (same resolution; restores optimizer/scheduler)")
+    tr.add_argument("--pretrain", type=str, default=None,
+                    help="Fine-tune from checkpoint (load weights only; allows different resolution)")
 
     # --- infer ---
     inf = sub.add_parser("infer", help="Run webcam inference")
@@ -399,7 +442,8 @@ def _build_parser() -> argparse.ArgumentParser:
     inf.add_argument("--num-classes", type=int, default=10)
     inf.add_argument("--groups", type=int, default=64)
     inf.add_argument("--width-per-group", type=int, default=4)
-    inf.add_argument("--size", type=int, default=224)
+    inf.add_argument("--size", type=int, default=None,
+                     help="Input size (default: from checkpoint, else 224)")
     inf.add_argument("--input-channels", type=int, choices=[1, 3], default=3)
     inf.add_argument("--camera", type=int, default=0)
     inf.add_argument("--smoothing", type=float, default=0.2)
@@ -418,7 +462,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--num-classes", type=int, default=10)
     ep.add_argument("--groups", type=int, default=64)
     ep.add_argument("--width-per-group", type=int, default=4)
-    ep.add_argument("--size", type=int, default=224, help="Model input size (height=width)")
+    ep.add_argument("--size", type=int, default=None,
+                    help="Model input size (default: from checkpoint, else 224)")
     ep.add_argument("--input-channels", type=int, choices=[1, 3], default=3)
     ep.add_argument("--push-to-hf", action="store_true", help="Upload compiled pipeline to HuggingFace Hub (requires HF_TOKEN or --hf-token and --hf-repo)")
     ep.add_argument("--hf-repo", help="HuggingFace repo id (e.g. username/repo)")
@@ -454,7 +499,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--checkpoint", required=True, help="Path to checkpoint (e.g. checkpoints/resnext.pt)")
     ev.add_argument("--test-dataset", required=True, help="Pareidolia test dir (e.g. dataset_out)")
     ev.add_argument("--dataset", default="mnist_rgb_224", help="Cached dataset name for mean/std (default: mnist_rgb_224)")
-    ev.add_argument("--size", type=int, default=224, help="Image size (default: 224)")
+    ev.add_argument("--size", type=int, default=None,
+                    help="Image size (default: from checkpoint, else 224)")
     ev.add_argument("--batch-size", type=int, default=128)
     ev.add_argument("--device", default="auto")
 
@@ -539,6 +585,12 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Use standard CutMix (DeiT-III style) instead of minmax bbox sampling")
     viz.add_argument("--mixup-prob", type=float, default=0.5)
     viz.add_argument("--mixup-mode", default="elem")
+    viz.add_argument("--num-workers", type=int, default=-1,
+                     help="DataLoader workers (-1 = auto)")
+    viz.add_argument("--prefetch-factor", type=int, default=2)
+    viz.add_argument("--external-cache", action="store_true",
+                     help="Enable LRU cache for external datasets")
+    viz.add_argument("--external-cache-max-mb", type=float, default=2048)
 
     return parser
 

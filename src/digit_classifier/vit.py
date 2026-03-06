@@ -48,6 +48,49 @@ class DeiTConfig:
     use_flash_attention: bool = False
 
 
+def resize_pos_embed(
+    pos_embed: Tensor,
+    orig_size: int,
+    new_size: int,
+    patch_size: int = 16,
+) -> Tensor:
+    """Interpolate position embeddings from orig_size to new_size (bicubic 2D).
+
+    DeiT uses no_embed_class style: pos_embed has shape (1, num_patches, D) where
+    num_patches = (image_size // patch_size)^2. Reshapes to 2D grid, interpolates,
+    then flattens back.
+
+    Parameters
+    ----------
+    pos_embed : Tensor
+        Shape (1, N_old, D).
+    orig_size, new_size : int
+        Original and target image size (height=width).
+    patch_size : int
+        Patch size (default 16).
+
+    Returns
+    -------
+    Tensor
+        Shape (1, N_new, D) with N_new = (new_size // patch_size)^2.
+    """
+    h_old = w_old = orig_size // patch_size
+    h_new = w_new = new_size // patch_size
+    if h_old == h_new and w_old == w_new:
+        return pos_embed
+
+    _, n_old, d = pos_embed.shape
+    pos_2d = pos_embed.reshape(1, h_old, w_old, d).permute(0, 3, 1, 2)  # (1, D, H, W)
+    pos_resized = F.interpolate(
+        pos_2d,
+        size=(h_new, w_new),
+        mode="bicubic",
+        align_corners=False,
+    )
+    pos_resized = pos_resized.permute(0, 2, 3, 1).reshape(1, h_new * w_new, d)
+    return pos_resized
+
+
 class DropPath(nn.Module):
     """Stochastic Depth per sample (timm-style)."""
 

@@ -85,7 +85,7 @@ def run_inference(
     checkpoint_path: str,
     *,
     num_classes: int = 10,
-    input_size: int = 224,
+    input_size: int | None = None,
     input_channels: int = 3,
     camera_index: int = 0,
     smoothing_alpha: float = 0.2,
@@ -111,7 +111,9 @@ def run_inference(
     # --- Model (auto-detects ResNeXt vs DeiT from checkpoint) ---
     model, ckpt = build_model_from_checkpoint(checkpoint_path, dev, model_type=model_type)
     num_classes = ckpt.get("model_config", {}).get("num_classes", num_classes)
-    console.print(f"Loaded checkpoint: [cyan]{checkpoint_path}[/cyan]")
+    if input_size is None:
+        input_size = ckpt.get("model_config", {}).get("image_size", 224)
+    console.print(f"Loaded checkpoint: [cyan]{checkpoint_path}[/cyan] (input_size={input_size})")
 
     # --- Mean / std: checkpoint > CLI args > fallback 0.5/0.5 ---
     if "mean" in ckpt and "std" in ckpt:

@@ -145,7 +145,7 @@ def test_create_dataloaders_uses_repeat_aug_ratio_when_both_enabled():
 
     val_dataset = TensorDataset(torch.randn(4, 3, 8, 8), torch.randint(0, 10, (4,)))
 
-    train_loader, val_loader = training._create_dataloaders(
+    train_loader, val_loader, _ = training._create_dataloaders(
         train_dataset,
         val_dataset,
         batch_size=4,
@@ -248,7 +248,7 @@ def test_train_runs_with_repeat_aug_and_external_data(monkeypatch):
     original_create = training._create_dataloaders
 
     def capturing_create(*args, **kwargs):
-        train_loader, val_loader = original_create(*args, **kwargs)
+        train_loader, val_loader, _ = original_create(*args, **kwargs)
         bs = getattr(train_loader, "batch_sampler", None)
         s = getattr(train_loader, "sampler", None)
         if bs is not None:
@@ -257,7 +257,7 @@ def test_train_runs_with_repeat_aug_and_external_data(monkeypatch):
             sampler_used["type"] = type(s).__name__
         else:
             sampler_used["type"] = "shuffle"
-        return train_loader, val_loader
+        return train_loader, val_loader, None
 
     monkeypatch.setattr(training, "_create_dataloaders", capturing_create)
 

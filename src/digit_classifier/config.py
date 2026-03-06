@@ -24,8 +24,15 @@ class DataConfig:
     repeat_aug_repeats: int = 3
     split_seed: int = 42
     mix_external: bool = True
+    external_only: bool = False  # train only on external data; skip loading primary dataset
+    external_val_source: str = "MNIST Test"  # which external to use for validation when external_only
     test_dataset_path: str | None = None  # Pareidolia output dir (e.g. dataset_out) for test eval
     primary_fraction: float = 0.95
+    num_workers: int = -1  # -1 = auto (cpu_count - 1, capped)
+    calibrate_workers: bool = False  # benchmark to find best num_workers before training
+    prefetch_factor: int = 2
+    external_cache: bool = False
+    external_cache_max_mb: float = 2048  # 0 = disabled; -1 = auto from available RAM; >0 = MB
     gdrive_url: str = (
         "https://drive.google.com/uc?id=1_gIar-Q89tWll-dnJUE077UujzAVMPxQ"
     )
@@ -98,6 +105,11 @@ class TrainingConfig:
     wandb_project: str = "CS148-MNIST"
     replace_best_checkpoint: bool = True  # overwrite best.pt / model-best artifact instead of accumulating
     checkpoint_enabled: bool = True  # when False, no checkpoints are saved to disk or wandb
+    val_every_n_epochs: int = 1  # validate every N epochs (1 = every epoch)
+    progress_bars: bool = False  # show Rich progress bars for each epoch's batches
+    wandb_watch: str = "gradients"  # "gradients" | "all" | "none"
+    resume_path: str | None = None  # full resume (optimizer, scheduler, epoch); same resolution
+    pretrain_path: str | None = None  # load weights only; allows different resolution for fine-tune
 
 
 @dataclass

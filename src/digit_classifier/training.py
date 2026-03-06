@@ -21,6 +21,7 @@ import torch.nn as nn
 import wandb
 from rich.console import Console
 from rich.pretty import pretty_repr
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from timm.loss import SoftTargetCrossEntropy
 from torch import Tensor
@@ -37,7 +38,7 @@ from digit_classifier.mixup import MixupCutmixApply, create_mixup_cutmix
 from digit_classifier.model import ResNeXt
 from digit_classifier.vit import build_deit3
 from digit_classifier.sampler import RatioBatchSampler, RepeatAugRatioBatchSampler, RepeatAugSampler
-from digit_classifier.splitting import split_dataset
+from digit_classifier.splitting import split_dataset, split_dataset_external_only
 
 console = Console()
 
@@ -221,8 +222,12 @@ def build_model_from_checkpoint(
     device: torch.device,
     *,
     model_type: str | None = None,
+    target_image_size: int | None = None,
 ) -> tuple[nn.Module, dict]:
     """Load checkpoint and build the appropriate model (ResNeXt or DeiT).
+
+    For DeiT, when target_image_size differs from the checkpoint's image_size,
+    position embeddings are interpolated to the new resolution.
 
     Returns (model, ckpt_dict). If model_type is None, uses checkpoint metadata
     or infers from state dict keys.
@@ -246,12 +251,25 @@ def build_model_from_checkpoint(
             width_per_group=config.get("width_per_group", 4),
         ).to(device)
     else:
-        from digit_classifier.vit import build_deit3
+        from digit_classifier.vit import build_deit3, resize_pos_embed
+
+        ckpt_image_size = config.get("image_size", 224)
+        effective_image_size = target_image_size if target_image_size is not None else ckpt_image_size
+
+        if ckpt_image_size != effective_image_size and "pos_embed" in stripped:
+            patch_size = 14 if config.get("deit_model", "base") == "huge" else 16
+            stripped["pos_embed"] = resize_pos_embed(
+                stripped["pos_embed"],
+                orig_size=ckpt_image_size,
+                new_size=effective_image_size,
+                patch_size=patch_size,
+            )
+
         model = build_deit3(
             size=config.get("deit_model", "base"),
             num_classes=num_classes,
             drop_path_rate=0.0,
-            image_size=config.get("image_size", 224),
+            image_size=effective_image_size,
         ).to(device)
 
     model_keys = set(model.state_dict().keys())
@@ -266,7 +284,7 @@ def run_eval(
     test_dataset_path: str,
     *,
     dataset_name: str = "mnist_rgb_224",
-    image_size: int = 224,
+    image_size: int | None = None,
     batch_size: int = 128,
     device: str = "auto",
 ) -> dict[str, float]:
@@ -278,6 +296,8 @@ def run_eval(
 
     model, ckpt = build_model_from_checkpoint(checkpoint_path, dev)
     num_classes = ckpt.get("model_config", {}).get("num_classes", 10)
+    if image_size is None:
+        image_size = ckpt.get("model_config", {}).get("image_size", 224)
 
     # Load mean/std from cached dataset (must match training normalization)
     npz_path = os.path.join("datasets", dataset_name + ".npz")
@@ -342,6 +362,9 @@ def train_epoch(
     ema: AveragedModel | None = None,
     grad_clip_norm: float = 1.0,
     use_amp: bool = True,
+    progress_bars: bool = False,
+    epoch: int = 0,
+    total_epochs: int = 1,
 ) -> dict[str, float]:
     """Run one training epoch and return computed metrics + loss."""
     model.train()
@@ -350,38 +373,65 @@ def train_epoch(
     pin = device.type == "cuda"
     amp_ctx = autocast(device_type=device.type) if use_amp else nullcontext()
 
-    for images, labels in loader:
-        if images.dtype != torch.float32:
-            images = images.float()
-        images = images.to(device, non_blocking=pin)
-        labels = labels.long().to(device, non_blocking=pin)
+    total_batches = len(loader)
+    progress_ctx = (
+        Progress(
+            TextColumn("[bold blue]Train[/] Epoch {task.fields[epoch]}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("• loss {task.fields[loss]:.4f}"),
+            console=console,
+        )
+        if progress_bars
+        else nullcontext()
+    )
 
-        if mixup_fn is not None:
-            images, labels = mixup_fn(images, labels)
+    with progress_ctx as progress:
+        if progress_bars:
+            task = progress.add_task(
+                "",
+                total=total_batches,
+                epoch=f"{epoch + 1}/{total_epochs}",
+                loss=0.0,
+            )
 
-        optimizer.zero_grad()
+        for batch_idx, (images, labels) in enumerate(loader):
+            if images.dtype != torch.float32:
+                images = images.float()
+            images = images.to(device, non_blocking=pin)
+            labels = labels.long().to(device, non_blocking=pin)
 
-        with amp_ctx:
-            logits = model(images)
-            loss = criterion(logits, labels)
+            if mixup_fn is not None:
+                images, labels = mixup_fn(images, labels)
 
-        num_batches += 1
-        running_loss += (loss.item() - running_loss) / num_batches
+            optimizer.zero_grad()
 
-        # Recover hard labels for metrics when mixup produced soft targets.
-        if labels.dim() == 2 and labels.dtype.is_floating_point:
-            _update_metrics(metrics, logits, labels.argmax(dim=1))
-        else:
-            _update_metrics(metrics, logits, labels)
+            with amp_ctx:
+                logits = model(images)
+                loss = criterion(logits, labels)
 
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
-        scaler.step(optimizer)
-        scaler.update()
+            num_batches += 1
+            running_loss += (loss.item() - running_loss) / num_batches
 
-        if ema is not None:
-            ema.update_parameters(model)
+            # Recover hard labels for metrics when mixup produced soft targets.
+            if labels.dim() == 2 and labels.dtype.is_floating_point:
+                _update_metrics(metrics, logits, labels.argmax(dim=1))
+            else:
+                _update_metrics(metrics, logits, labels)
+
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+            scaler.step(optimizer)
+            scaler.update()
+
+            if ema is not None:
+                ema.update_parameters(model)
+
+            if progress is not None:
+                progress.update(task, advance=1, loss=running_loss)
 
     result = _compute_and_reset(metrics)
     result["cross_entropy"] = running_loss
@@ -395,6 +445,7 @@ def validate(
     metrics: dict[str, Metric],
     device: torch.device,
     use_amp: bool = True,
+    progress_bars: bool = False,
 ) -> dict[str, float]:
     """Run one validation pass and return computed metrics + loss."""
     model.eval()
@@ -403,8 +454,25 @@ def validate(
     pin = device.type == "cuda"
     amp_ctx = autocast(device_type=device.type) if use_amp else nullcontext()
 
-    with torch.no_grad():
-        for images, labels in loader:
+    total_batches = len(loader)
+    progress_ctx = (
+        Progress(
+            TextColumn("[bold cyan]Val[/]"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            console=console,
+        )
+        if progress_bars
+        else nullcontext()
+    )
+
+    with torch.no_grad(), progress_ctx as progress:
+        if progress_bars:
+            task = progress.add_task("", total=total_batches)
+
+        for batch_idx, (images, labels) in enumerate(loader):
             if images.dtype != torch.float32:
                 images = images.float()
             images = images.to(device, non_blocking=pin)
@@ -417,6 +485,9 @@ def validate(
             num_batches += 1
             running_loss += (loss.item() - running_loss) / num_batches
             _update_metrics(metrics, logits, labels)
+
+            if progress is not None:
+                progress.update(task, advance=1)
 
     result = _compute_and_reset(metrics)
     result["cross_entropy"] = running_loss
@@ -436,23 +507,31 @@ def _create_dataloaders(
     repeat_aug: bool = False,
     repeat_aug_repeats: int = 3,
     test_dataset: Dataset | None = None,
+    *,
+    num_workers: int = -1,
+    prefetch_factor: int = 2,
 ) -> tuple[DataLoader, DataLoader, DataLoader | None]:
-    num_workers = min(8, max(1, cpu_count() - 1))
+    if num_workers < 0:
+        num_workers = min(16, max(1, cpu_count() - 1))
     pin_memory = device.type == "cuda"
     persistent = num_workers > 0
-    prefetch = 2 if num_workers > 0 else None
-
     common: dict = dict(
         num_workers=num_workers,
         persistent_workers=persistent,
         pin_memory=pin_memory,
-        prefetch_factor=prefetch,
     )
+    if num_workers > 0:
+        common["prefetch_factor"] = prefetch_factor
 
     original_count = getattr(train_dataset, "num_original", None)
-    has_external = original_count is not None and original_count < len(train_dataset)
+    # Use ratio sampler only when we have both primary (num_original > 0) and external data
+    has_mixed = (
+        original_count is not None
+        and original_count > 0
+        and original_count < len(train_dataset)
+    )
 
-    if repeat_aug and has_external:
+    if repeat_aug and has_mixed:
         batch_sampler = RepeatAugRatioBatchSampler(
             original_count=int(original_count),
             total_count=len(train_dataset),
@@ -476,7 +555,7 @@ def _create_dataloaders(
             **common,
         )
     else:
-        if original_count is not None:
+        if has_mixed:
             sampler = RatioBatchSampler(
                 original_count=int(original_count),
                 total_count=len(train_dataset),
@@ -539,6 +618,85 @@ def _log_epoch_table(
 
 
 # ---------------------------------------------------------------------------
+# Calibration and auto-tuning
+# ---------------------------------------------------------------------------
+
+def _calibrate_num_workers(
+    batch_size: int,
+    prefetch_factor: int,
+    image_size: int = 224,
+    num_channels: int = 3,
+    num_batches: int = 50,
+) -> int:
+    """Benchmark different num_workers and return the one with best throughput.
+
+    Uses a synthetic in-memory dataset to measure DataLoader overhead.
+    """
+    import time
+    from torch.utils.data import TensorDataset
+
+    # Use smaller images for calibration to avoid excessive memory
+    cal_size = min(image_size, 32)
+    n_samples = num_batches * batch_size * 2  # ensure enough for drop_last
+    fake_images = torch.randn(n_samples, num_channels, cal_size, cal_size, dtype=torch.float32)
+    fake_labels = torch.randint(0, 10, (n_samples,))
+    ds = TensorDataset(fake_images, fake_labels)
+
+    candidates = [0, 4, 8, 16, 24, 32]
+    max_workers = max(1, cpu_count() - 1)
+    candidates = [n for n in candidates if n <= max_workers]
+    if max_workers > 32 and max_workers not in candidates:
+        candidates.append(min(max_workers, 64))
+
+    best_nw = 0
+    best_throughput = 0.0
+    results: list[tuple[int, float]] = []
+
+    for nw in candidates:
+        loader = DataLoader(
+            ds,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=nw,
+            prefetch_factor=prefetch_factor if nw > 0 else None,
+            drop_last=True,
+            pin_memory=False,
+        )
+        start = time.perf_counter()
+        count = 0
+        for _ in loader:
+            count += 1
+            if count >= num_batches:
+                break
+        elapsed = time.perf_counter() - start
+        throughput = count * batch_size / elapsed if elapsed > 0 else 0
+        results.append((nw, throughput))
+        if throughput > best_throughput:
+            best_throughput = throughput
+            best_nw = nw
+
+    console.print("[bold]Worker calibration:[/bold]")
+    for nw, tp in results:
+        mark = " ← best" if nw == best_nw else ""
+        console.print(f"  [dim]{nw} workers:[/dim] {tp:.0f} samples/s{mark}")
+    return best_nw
+
+
+def _resolve_external_cache_max_mb(value: float) -> float:
+    """Resolve external_cache_max_mb; -1 means auto from available RAM."""
+    if value >= 0:
+        return value
+    try:
+        import psutil
+        available_bytes = psutil.virtual_memory().available
+        # 15% of available RAM, cap at 4 GB
+        auto_mb = min(4096, int(available_bytes * 0.15 / (1024 * 1024)))
+        return max(256, auto_mb)  # at least 256 MB
+    except ImportError:
+        return 2048
+
+
+# ---------------------------------------------------------------------------
 # Main training entry-point
 # ---------------------------------------------------------------------------
 
@@ -561,6 +719,10 @@ def load_cached_dataset(cfg: Config) -> tuple[Tensor, Tensor, tuple | None, tupl
 
 def train(cfg: Config) -> None:
     """Run the full training pipeline driven by *cfg*."""
+    tc = cfg.training
+    if tc.resume_path and tc.pretrain_path:
+        raise ValueError("Cannot use both --resume and --pretrain; choose one.")
+
     device, device_name = _detect_device()
     console.print(f"[bold]Device:[/bold] {device}")
 
@@ -584,20 +746,54 @@ def train(cfg: Config) -> None:
                     pass
 
     # --- Data ---
-    images, labels, cached_mean, cached_std = load_cached_dataset(cfg)
-    console.print(f"Loaded [cyan]{cfg.data.dataset_name}[/cyan]: {images.shape}, mean={cached_mean}, std={cached_std}")
+    num_workers = cfg.data.num_workers
+    if cfg.data.calibrate_workers:
+        num_workers = _calibrate_num_workers(
+            batch_size=cfg.data.batch_size,
+            prefetch_factor=cfg.data.prefetch_factor,
+            image_size=cfg.data.image_size,
+            num_channels=3 if cfg.data.color else 1,
+        )
+        console.print(f"Calibrated workers: [cyan]{num_workers}[/cyan]")
+    elif num_workers < 0:
+        num_workers = min(16, max(1, cpu_count() - 1))
+    console.print(f"DataLoader workers: [cyan]{num_workers}[/cyan]")
 
-    train_dataset, val_dataset, mean, std = split_dataset(
-        images, labels, cached_mean, cached_std,
-        train_fraction=cfg.data.train_fraction,
-        mix_external=cfg.data.mix_external,
-        external_fractions=DEFAULT_EXTERNAL_FRACTIONS if cfg.data.mix_external else None,
-        color=cfg.data.color,
-        size=cfg.data.image_size,
-        seed=cfg.data.split_seed,
-        augment_cfg=cfg.augment,
-        augment_scheme=cfg.data.augment_scheme,
-    )
+    external_cache_max_mb = _resolve_external_cache_max_mb(cfg.data.external_cache_max_mb)
+    if cfg.data.external_cache and cfg.data.external_cache_max_mb < 0:
+        console.print(f"External cache (auto): [cyan]{external_cache_max_mb:.0f} MB[/cyan]")
+
+    if cfg.data.external_only:
+        if not cfg.data.mix_external:
+            raise ValueError("external_only requires mix_external=True")
+        train_dataset, val_dataset, mean, std = split_dataset_external_only(
+            external_val_source=cfg.data.external_val_source,
+            color=cfg.data.color,
+            size=cfg.data.image_size,
+            seed=cfg.data.split_seed,
+            external_cache=cfg.data.external_cache,
+            external_cache_max_mb=external_cache_max_mb,
+            num_workers=num_workers,
+        )
+        console.print(f"External-only: {len(train_dataset):,} train / {len(val_dataset):,} val")
+    else:
+        images, labels, cached_mean, cached_std = load_cached_dataset(cfg)
+        console.print(f"Loaded [cyan]{cfg.data.dataset_name}[/cyan]: {images.shape}, mean={cached_mean}, std={cached_std}")
+
+        train_dataset, val_dataset, mean, std = split_dataset(
+            images, labels, cached_mean, cached_std,
+            train_fraction=cfg.data.train_fraction,
+            mix_external=cfg.data.mix_external,
+            external_fractions=DEFAULT_EXTERNAL_FRACTIONS if cfg.data.mix_external else None,
+            color=cfg.data.color,
+            size=cfg.data.image_size,
+            seed=cfg.data.split_seed,
+            augment_cfg=cfg.augment,
+            augment_scheme=cfg.data.augment_scheme,
+            external_cache=cfg.data.external_cache,
+            external_cache_max_mb=external_cache_max_mb,
+            num_workers=num_workers,
+        )
     console.print(f"Train: {len(train_dataset)} samples, Val: {len(val_dataset)} samples")
 
     test_dataset = None
@@ -621,6 +817,8 @@ def train(cfg: Config) -> None:
         repeat_aug=cfg.data.repeat_aug,
         repeat_aug_repeats=cfg.data.repeat_aug_repeats,
         test_dataset=test_dataset,
+        num_workers=num_workers,
+        prefetch_factor=cfg.data.prefetch_factor,
     )
 
     # --- Mixup / CutMix ---
@@ -657,6 +855,48 @@ def train(cfg: Config) -> None:
             init_values=mc.layer_scale_init,
         ).to(device)
 
+    start_epoch = 0
+    resume_ckpt: dict | None = None
+    if tc.pretrain_path:
+        resume_ckpt = torch.load(tc.pretrain_path, map_location=device, weights_only=False)
+        state = resume_ckpt.get("ema_state_dict", resume_ckpt.get("model_state_dict"))
+        if state is None:
+            raise KeyError(f"Checkpoint {tc.pretrain_path} must contain 'ema_state_dict' or 'model_state_dict'")
+        stripped = {k.replace("_orig_mod.", "").replace("module.", ""): v for k, v in state.items()}
+        ckpt_config = resume_ckpt.get("model_config", {})
+        ckpt_image_size = ckpt_config.get("image_size", 224)
+        if mc.model_type == "deit" and ckpt_image_size != cfg.data.image_size and "pos_embed" in stripped:
+            from digit_classifier.vit import resize_pos_embed
+            patch_size = 14 if ckpt_config.get("deit_model", "base") == "huge" else 16
+            stripped["pos_embed"] = resize_pos_embed(
+                stripped["pos_embed"],
+                orig_size=ckpt_image_size,
+                new_size=cfg.data.image_size,
+                patch_size=patch_size,
+            )
+        model_keys = set(model.state_dict().keys())
+        filtered = {k: v for k, v in stripped.items() if k in model_keys}
+        model.load_state_dict(filtered, strict=True)
+        console.print(f"[bold]Loaded pretrained weights from[/bold] {tc.pretrain_path} (image_size {ckpt_image_size} -> {cfg.data.image_size})")
+    elif tc.resume_path:
+        resume_ckpt = torch.load(tc.resume_path, map_location=device, weights_only=False)
+        ckpt_config = resume_ckpt.get("model_config", {})
+        ckpt_image_size = ckpt_config.get("image_size", 224)
+        if ckpt_image_size != cfg.data.image_size:
+            raise ValueError(
+                f"Resume requires same resolution: checkpoint has image_size={ckpt_image_size}, "
+                f"config has {cfg.data.image_size}. Use --pretrain for fine-tuning at different resolution."
+            )
+        state = resume_ckpt.get("ema_state_dict", resume_ckpt.get("model_state_dict"))
+        if state is None:
+            raise KeyError(f"Checkpoint {tc.resume_path} must contain 'ema_state_dict' or 'model_state_dict'")
+        stripped = {k.replace("_orig_mod.", "").replace("module.", ""): v for k, v in state.items()}
+        model_keys = set(model.state_dict().keys())
+        filtered = {k: v for k, v in stripped.items() if k in model_keys}
+        model.load_state_dict(filtered, strict=True)
+        start_epoch = resume_ckpt.get("epoch", 0)
+        console.print(f"[bold]Resumed from[/bold] {tc.resume_path} (epoch {start_epoch})")
+
     param_groups = _get_param_groups(
         model,
         lr=tc.lr,
@@ -670,6 +910,12 @@ def train(cfg: Config) -> None:
 
     if tc.ema_enabled:
         ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(tc.ema_decay), use_buffers=True)
+        if resume_ckpt is not None and "ema_state_dict" in resume_ckpt:
+            try:
+                ema.load_state_dict(resume_ckpt["ema_state_dict"])
+                console.print("[dim]Restored EMA state[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]Could not restore EMA: {e}[/yellow]")
     else:
         ema = None
 
@@ -698,6 +944,20 @@ def train(cfg: Config) -> None:
     )
     if warm_restart_epochs:
         console.print(f"[bold]Warm-restart epochs:[/bold] {warm_restart_epochs}")
+
+    if resume_ckpt is not None:
+        if "optimizer_state_dict" in resume_ckpt:
+            try:
+                optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
+                console.print("[dim]Restored optimizer state[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]Could not restore optimizer: {e}[/yellow]")
+        if "scheduler_state_dict" in resume_ckpt:
+            try:
+                scheduler.load_state_dict(resume_ckpt["scheduler_state_dict"])
+                console.print("[dim]Restored scheduler state[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]Could not restore scheduler: {e}[/yellow]")
 
     # --- Metrics ---
     metrics = _build_metrics(cfg.model.num_classes, device)
@@ -730,7 +990,8 @@ def train(cfg: Config) -> None:
         else:
             wandb_config.update({"deit_model": mc.deit_model})
         wandb.init(project=tc.wandb_project, config=wandb_config)
-        wandb.watch(model, log="gradients", log_freq=100)
+        if tc.wandb_watch and tc.wandb_watch != "none":
+            wandb.watch(model, log=tc.wandb_watch, log_freq=100)
         if tc.checkpoint_enabled:
             checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
             os.makedirs(checkpoint_dir, exist_ok=True)
@@ -741,9 +1002,9 @@ def train(cfg: Config) -> None:
             os.makedirs(checkpoint_dir, exist_ok=True)
 
     # --- Training loop ---
-    best_val_accuracy = 0.0
+    best_val_accuracy = resume_ckpt.get("val_accuracy", 0.0) if resume_ckpt else 0.0
 
-    for epoch in range(tc.epochs):
+    for epoch in range(start_epoch, tc.epochs):
         # Repeated augmentation: set epoch for reproducible shuffle
         loader_sampler = getattr(train_loader, "sampler", None) or getattr(
             train_loader, "batch_sampler", None
@@ -774,20 +1035,33 @@ def train(cfg: Config) -> None:
             model, train_loader, train_criterion, optimizer, metrics, scaler,
             device, mixup_fn=active_mixup, ema=ema, grad_clip_norm=tc.grad_clip_norm,
             use_amp=tc.amp_enabled,
+            progress_bars=tc.progress_bars,
+            epoch=epoch,
+            total_epochs=tc.epochs,
         )
-        val_metrics_raw = validate(model, val_loader, val_criterion, metrics, device, use_amp=tc.amp_enabled)
-        if ema is not None:
-            val_metrics_ema = validate(ema, val_loader, val_criterion, metrics, device, use_amp=tc.amp_enabled)
+        do_validate = (epoch + 1) % tc.val_every_n_epochs == 0 or epoch == tc.epochs - 1
+        if do_validate:
+            val_metrics_raw = validate(
+                model, val_loader, val_criterion, metrics, device,
+                use_amp=tc.amp_enabled, progress_bars=tc.progress_bars,
+            )
+            if ema is not None:
+                val_metrics_ema = validate(
+                    ema, val_loader, val_criterion, metrics, device,
+                    use_amp=tc.amp_enabled, progress_bars=tc.progress_bars,
+                )
+            else:
+                val_metrics_ema = dict(val_metrics_raw)
         else:
-            # without EMA the raw and EMA scores are identical; make a shallow
-            # copy to prevent accidental mutation later on
-            val_metrics_ema = dict(val_metrics_raw)
+            val_metrics_raw = {}
+            val_metrics_ema = {}
 
         test_metrics_ema: dict[str, float] | None = None
-        if test_loader is not None:
+        if test_loader is not None and do_validate:
             eval_model = ema if ema is not None else model
             test_metrics_ema = validate(
-                eval_model, test_loader, val_criterion, metrics, device, use_amp=tc.amp_enabled
+                eval_model, test_loader, val_criterion, metrics, device,
+                use_amp=tc.amp_enabled, progress_bars=tc.progress_bars,
             )
 
         # --- Pre-restart checkpoint (before scheduler.step) ---
@@ -799,6 +1073,7 @@ def train(cfg: Config) -> None:
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "val_accuracy": val_metrics_ema.get("accuracy"),
                 "model_type": mc.model_type,
                 "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),
@@ -838,9 +1113,12 @@ def train(cfg: Config) -> None:
                 log_dict.update({f"test_ema/{k}": v for k, v in test_metrics_ema.items()})
             wandb.log(log_dict)
 
-        # --- Best-model checkpoint ---
-        val_accuracy = val_metrics_ema["accuracy"]
-        if val_accuracy > best_val_accuracy:
+        # --- Best-model checkpoint (only when we ran validation) ---
+        if do_validate:
+            val_accuracy = val_metrics_ema["accuracy"]
+        else:
+            val_accuracy = 0.0
+        if do_validate and val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
             if tc.checkpoint_enabled:
                 ckpt_path = os.path.join(checkpoint_dir, "best.pt")
@@ -848,6 +1126,7 @@ def train(cfg: Config) -> None:
                     "epoch": epoch + 1,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
                     "val_accuracy": val_accuracy,
                     "model_type": mc.model_type,
                     "model_config": _get_model_config_for_checkpoint(mc, cfg.data.image_size),

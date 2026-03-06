@@ -27,6 +27,9 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+memory-guard = [
+    "psutil>=5.9",
+]
 pareidolia = [
     "openai>=1.0",
     "pillow>=10.0",

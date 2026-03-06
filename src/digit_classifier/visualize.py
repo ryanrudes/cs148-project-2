@@ -18,7 +18,7 @@ from digit_classifier.config import Config
 from digit_classifier.external import DEFAULT_EXTERNAL_FRACTIONS
 from digit_classifier.mixup import MixupCutmixApply, create_mixup_cutmix
 from digit_classifier.splitting import split_dataset
-from digit_classifier.training import _create_dataloaders, load_cached_dataset
+from digit_classifier.training import _create_dataloaders, _resolve_external_cache_max_mb, load_cached_dataset
 
 console = Console()
 
@@ -30,6 +30,11 @@ def visualize_batches(cfg: Config, num_batches: int = 1) -> None:
     Press **q** to quit early.
     """
     images, labels, cached_mean, cached_std = load_cached_dataset(cfg)
+    num_workers = cfg.data.num_workers
+    if num_workers < 0:
+        from multiprocessing import cpu_count
+        num_workers = min(16, max(1, cpu_count() - 1))
+    external_cache_max_mb = _resolve_external_cache_max_mb(cfg.data.external_cache_max_mb)
     train_dataset, _, mean, std = split_dataset(
         images, labels, cached_mean, cached_std,
         train_fraction=cfg.data.train_fraction,
@@ -40,6 +45,9 @@ def visualize_batches(cfg: Config, num_batches: int = 1) -> None:
         seed=cfg.data.split_seed,
         augment_cfg=cfg.augment,
         augment_scheme=cfg.data.augment_scheme,
+        external_cache=cfg.data.external_cache,
+        external_cache_max_mb=external_cache_max_mb,
+        num_workers=num_workers,
     )
 
     device = torch.device("cpu")
@@ -48,6 +56,8 @@ def visualize_batches(cfg: Config, num_batches: int = 1) -> None:
         cfg.data.primary_fraction, device,
         repeat_aug=cfg.data.repeat_aug,
         repeat_aug_repeats=cfg.data.repeat_aug_repeats,
+        num_workers=num_workers,
+        prefetch_factor=cfg.data.prefetch_factor,
     )
 
     tc = cfg.training

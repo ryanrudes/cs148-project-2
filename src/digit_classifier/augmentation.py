@@ -315,6 +315,9 @@ class ThreeAugment:
     Exact match for the official DeiT augment.py and timm's 3a policy. Order per paper:
     one of (grayscale, solarize, gaussian blur) → color jitter → horizontal flip.
 
+    When *size* is provided, prepends RandomResizedCrop to produce the target resolution
+    (allows using a cache at one resolution while training at another).
+
     The callable signature is ``(image, label) -> image`` for :class:`DigitDataset`.
     """
 
@@ -327,7 +330,13 @@ class ThreeAugment:
         blur_sigma: tuple[float, float] = _BLUR_SIGMA_DEIT,
         mean: tuple[float, ...] | None = None,
         std: tuple[float, ...] | None = None,
+        size: int | None = None,
     ) -> None:
+        self._resize = (
+            T.RandomResizedCrop(size=size, scale=(0.8, 1.0), ratio=(0.9, 1.1))
+            if size is not None
+            else None
+        )
         self._conditional_hflip = _LabelConditionalHFlip(p=fliplr)
         self._random_aug = _ThreeAugmentRandom(
             solarize_threshold=solarize_threshold,
@@ -341,6 +350,8 @@ class ThreeAugment:
         self._norm_gray = T.Normalize(mean=(float(mean[0]),), std=(float(std[0]),))
 
     def __call__(self, img: Tensor, label: int | None = None) -> Tensor:
+        if self._resize is not None:
+            img = self._resize(img)
         img = self._random_aug(img)
         img = self._color_jitter(img)
         if label is not None:
@@ -357,6 +368,8 @@ class AutoAugmentTransform:
     """AutoAugment with SVHN policy, wrapped for (image, label) -> image.
 
     Expects float [0, 1] input; converts to uint8 for AutoAugment, then back.
+
+    When *size* is provided, prepends RandomResizedCrop to produce the target resolution.
     """
 
     def __init__(
@@ -365,7 +378,13 @@ class AutoAugmentTransform:
         fliplr: float = 0.5,
         mean: tuple[float, ...] | None = None,
         std: tuple[float, ...] | None = None,
+        size: int | None = None,
     ) -> None:
+        self._resize = (
+            T.RandomResizedCrop(size=size, scale=(0.8, 1.0), ratio=(0.9, 1.1))
+            if size is not None
+            else None
+        )
         self._autoaugment = AutoAugment(policy=AutoAugmentPolicy.SVHN)
         self._conditional_hflip = _LabelConditionalHFlip(p=fliplr)
         if mean is None or std is None:
@@ -375,6 +394,8 @@ class AutoAugmentTransform:
         self._norm_gray = T.Normalize(mean=(float(mean[0]),), std=(float(std[0]),))
 
     def __call__(self, img: Tensor, label: int | None = None) -> Tensor:
+        if self._resize is not None:
+            img = self._resize(img)
         # AutoAugment expects uint8 [0, 255]
         img_uint8 = (img.clamp(0, 1) * 255).to(torch.uint8)
         img_uint8 = self._autoaugment(img_uint8)
@@ -425,8 +446,8 @@ def build_augmentor(
         return build_yolo_augmentor(mean=mean, std=std, size=size, cfg=cfg)
     if scheme == "three_augment":
         fliplr = cfg.fliplr if cfg is not None else 0.5
-        return ThreeAugment(fliplr=fliplr, mean=mean, std=std)
+        return ThreeAugment(fliplr=fliplr, mean=mean, std=std, size=size)
     if scheme == "autoaugment":
         fliplr = cfg.fliplr if cfg is not None else 0.5
-        return AutoAugmentTransform(fliplr=fliplr, mean=mean, std=std)
+        return AutoAugmentTransform(fliplr=fliplr, mean=mean, std=std, size=size)
     raise AssertionError(f"Unhandled scheme: {scheme}")
