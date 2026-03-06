@@ -25,7 +25,9 @@ class DataConfig:
     split_seed: int = 42
     mix_external: bool = True
     external_only: bool = False  # train only on external data; skip loading primary dataset
-    external_val_source: str = "MNIST Test"  # which external to use for validation when external_only
+    external_val_source: str = "MNIST Test"  # which external to use for validation when external_only (ignored if external_val_split)
+    external_val_split: bool = False  # when True, val = random subset of union of all external; when False, val = one held-out source
+    external_val_fraction: float = 0.1  # fraction for validation when external_val_split (e.g. 0.1 = 10% val)
     test_dataset_path: str | None = None  # Pareidolia output dir (e.g. dataset_out) for test eval
     test_preload: bool = True  # preload pareidolia test images into memory (disable for huge sets)
     primary_fraction: float = 0.95

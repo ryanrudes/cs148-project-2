@@ -287,6 +287,8 @@ def compute_external_manifest_hash(
     train_fraction: float,
     external_only: bool = False,
     val_source: str | None = None,
+    val_split: bool = False,
+    val_fraction: float = 0.1,
 ) -> str:
     """Compute a short hex hash that uniquely identifies an external data config.
 
@@ -303,6 +305,9 @@ def compute_external_manifest_hash(
     ]
     if val_source is not None:
         parts.append(f"val={val_source}")
+    if val_split:
+        parts.append(f"val_split={val_split}")
+        parts.append(f"val_frac={val_fraction}")
     blob = "|".join(parts).encode()
     return hashlib.sha256(blob).hexdigest()[:12]
 

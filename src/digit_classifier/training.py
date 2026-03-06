@@ -1121,6 +1121,8 @@ def train(cfg: Config) -> None:
             raise ValueError("external_only requires mix_external=True")
         train_dataset, val_dataset, mean, std = split_dataset_external_only(
             external_val_source=cfg.data.external_val_source,
+            external_val_split=cfg.data.external_val_split,
+            external_val_fraction=cfg.data.external_val_fraction,
             color=cfg.data.color,
             size=cfg.data.image_size,
             seed=cfg.data.split_seed,

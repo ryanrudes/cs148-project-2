@@ -57,6 +57,8 @@ def _handle_train(args: argparse.Namespace) -> None:
             mix_external=args.mix_external,
             external_only=getattr(args, "external_only", False),
             external_val_source=getattr(args, "external_val_source", "MNIST Test"),
+            external_val_split=getattr(args, "external_val_split", False),
+            external_val_fraction=getattr(args, "external_val_fraction", 0.1),
             primary_fraction=args.primary_fraction,
             test_dataset_path=args.test_dataset,
             test_preload=not getattr(args, "no_preload_test", False),
@@ -352,7 +354,11 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--external-only", action="store_true",
                     help="Train only on external data; skip loading primary dataset")
     tr.add_argument("--external-val-source", type=str, default="MNIST Test",
-                    help="External source for validation when --external-only (e.g. 'MNIST Test')")
+                    help="External source for validation when --external-only (ignored if --external-val-split)")
+    tr.add_argument("--external-val-split", action="store_true",
+                    help="When --external-only: val = random subset of union; else val = one held-out source")
+    tr.add_argument("--external-val-fraction", type=float, default=0.1,
+                    help="Validation fraction when --external-val-split (default: 0.1)")
     tr.add_argument("--primary-fraction", type=float, default=0.95)
     tr.add_argument("--test-dataset", type=str, default=None,
                     help="Pareidolia output dir (e.g. dataset_out) for test evaluation; no augmentation")

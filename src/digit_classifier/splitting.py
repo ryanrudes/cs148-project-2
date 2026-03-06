@@ -33,7 +33,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from torch import Tensor
-from torch.utils.data import ConcatDataset, DataLoader, Dataset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 from torchvision.transforms import v2 as T
 
 from digit_classifier.augmentation import ApplyTransform, build_augmentor
@@ -64,6 +64,7 @@ class _NormalisedPreprocessor:
         return T.Normalize(mean=self.mean, std=self.std)(t)
 from digit_classifier.external import (
     CachedExternalDataset,
+    DEFAULT_EXTERNAL_FRACTIONS,
     ExternalDataset,
     ExternalOnDemandDataset,
     compute_external_manifest_hash,
@@ -145,6 +146,8 @@ class _ExternalValDataset(Dataset):
 def split_dataset_external_only(
     *,
     external_val_source: str = "MNIST Test",
+    external_val_split: bool = False,
+    external_val_fraction: float = 0.1,
     color: bool = True,
     size: int = 224,
     seed: int = 42,
@@ -156,19 +159,30 @@ def split_dataset_external_only(
 
     Returns ``(train_dataset, val_dataset, mean, std)``. Uses default mean/std
     (0.5 per channel). Sets ``num_original=0`` so DataLoader uses simple shuffle.
-    """
-    try:
-        val_source = ExternalDataset(external_val_source)
-    except ValueError:
-        valid = [e.value for e in ExternalDataset]
-        raise ValueError(f"external_val_source must be one of {valid}") from None
 
-    external_fractions = get_external_only_fractions(val_source)
-    dataset_names = [ds.value for ds in external_fractions]
-    manifest_hash = compute_external_manifest_hash(
-        dataset_names, color, size, seed, 1.0,
-        external_only=True, val_source=val_source.value,
-    )
+    When external_val_split=False (default): validation = one held-out source
+    (external_val_source). When external_val_split=True: validation = random
+    subset (external_val_fraction) of the union of all external sources.
+    """
+    if external_val_split:
+        external_fractions = DEFAULT_EXTERNAL_FRACTIONS
+        dataset_names = [ds.value for ds in external_fractions]
+        manifest_hash = compute_external_manifest_hash(
+            dataset_names, color, size, seed, 1.0,
+            external_only=True, val_split=True, val_fraction=external_val_fraction,
+        )
+    else:
+        try:
+            val_source = ExternalDataset(external_val_source)
+        except ValueError:
+            valid = [e.value for e in ExternalDataset]
+            raise ValueError(f"external_val_source must be one of {valid}") from None
+        external_fractions = get_external_only_fractions(val_source)
+        dataset_names = [ds.value for ds in external_fractions]
+        manifest_hash = compute_external_manifest_hash(
+            dataset_names, color, size, seed, 1.0,
+            external_only=True, val_source=val_source.value,
+        )
 
     num_channels = 3 if color else 1
     mean_t = (0.5,) * num_channels
@@ -177,9 +191,10 @@ def split_dataset_external_only(
     generator = torch.Generator().manual_seed(seed)
     dedup_cache = _try_load_dedup_cache(manifest_hash)
 
-    # Load training externals (all except val source)
+    # Load external datasets
     external_datasets_list: list[ExternalOnDemandDataset] = []
     total_external = len(external_fractions)
+    load_label = "[cyan]Loading external datasets (train)" if not external_val_split else "[cyan]Loading external datasets"
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -188,7 +203,7 @@ def split_dataset_external_only(
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("[cyan]Loading external datasets (train)", total=total_external)
+        task = progress.add_task(load_label, total=total_external)
         for ext_dataset, ext_fraction in external_fractions.items():
             progress.update(task, description=f"[cyan]Loading {ext_dataset.value}")
             max_samples = None if ext_fraction == -1 else int(ext_fraction)
@@ -212,10 +227,10 @@ def split_dataset_external_only(
             progress.advance(task)
 
     if not external_datasets_list:
-        raise ValueError("No external training datasets loaded; check external_val_source and sources")
+        raise ValueError("No external datasets loaded")
 
     total_ext = sum(len(ds) for ds in external_datasets_list)
-    console.print(f"[bold]External train:[/bold] {len(external_datasets_list)} sources, {total_ext:,} samples")
+    console.print(f"[bold]External:[/bold] {len(external_datasets_list)} sources, {total_ext:,} samples")
 
     if dedup_cache is None:
         console.print("[dim]Deduplicating NIST-like datasets …[/dim]")
@@ -239,17 +254,32 @@ def split_dataset_external_only(
         target = ext._underlying if isinstance(ext, CachedExternalDataset) else ext
         target.preprocessor = _NormalisedPreprocessor(target.preprocessor, mean_t, std_t)
 
-    train_dataset: ConcatDataset | Dataset = ConcatDataset(
+    combined: ConcatDataset | Dataset = ConcatDataset(
         external_datasets_list,  # type: ignore[list-item]
     )
-    setattr(train_dataset, "num_original", 0)
+    setattr(combined, "num_original", 0)
 
-    # Load validation external (preprocessor already does resize, crop, normalize)
-    console.print(f"[dim]Loading validation: {val_source.value}[/dim]")
-    val_ext = ExternalOnDemandDataset(val_source, color, size, max_samples=None, rnd=generator)
-    val_ext.preprocessor = _NormalisedPreprocessor(val_ext.preprocessor, mean_t, std_t)
-    val_dataset = _ExternalValDataset(val_ext, T.Identity())
-    console.print(f"  [dim]✓ {val_source.value}: {len(val_dataset):,} samples[/dim]")
+    if external_val_split:
+        # Random subset of union for train/val
+        n = len(combined)
+        perm = torch.randperm(n, generator=generator)
+        n_val = max(1, int(external_val_fraction * n))
+        n_train = n - n_val
+        val_indices = perm[:n_val].tolist()
+        train_indices = perm[n_val:].tolist()
+        train_dataset = Subset(combined, train_indices)
+        val_dataset = Subset(combined, val_indices)
+        setattr(train_dataset, "num_original", 0)
+        console.print(f"[dim]Split: {n_train:,} train / {n_val:,} val ({100 * external_val_fraction:.0f}% val)[/dim]")
+    else:
+        # Source holdout: train = combined, val = held-out source
+        train_dataset = combined
+        val_source = ExternalDataset(external_val_source)
+        console.print(f"[dim]Loading validation: {val_source.value}[/dim]")
+        val_ext = ExternalOnDemandDataset(val_source, color, size, max_samples=None, rnd=generator)
+        val_ext.preprocessor = _NormalisedPreprocessor(val_ext.preprocessor, mean_t, std_t)
+        val_dataset = _ExternalValDataset(val_ext, T.Identity())
+        console.print(f"  [dim]✓ {val_source.value}: {len(val_dataset):,} samples[/dim]")
 
     console.print(f"[bold]Mean:[/bold] ({', '.join(f'{v:.4f}' for v in mean_t)})")
     console.print(f"[bold]Std:[/bold]  ({', '.join(f'{v:.4f}' for v in std_t)})")
