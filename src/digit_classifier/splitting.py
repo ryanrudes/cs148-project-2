@@ -185,9 +185,6 @@ def split_dataset_external_only(
         )
 
     num_channels = 3 if color else 1
-    mean_t = (0.5,) * num_channels
-    std_t = (0.5,) * num_channels
-
     generator = torch.Generator().manual_seed(seed)
     dedup_cache = _try_load_dedup_cache(manifest_hash)
 
@@ -240,6 +237,45 @@ def split_dataset_external_only(
         _save_dedup_cache(manifest_hash, external_datasets_list)
     else:
         console.print(f"  [dim]Using cached dedup indices[/dim]")
+
+    # Compute mean/std from external data (preprocessors not yet normalised)
+    console.print("[dim]Computing mean/std from external training data …[/dim]")
+    combined_for_stats = ConcatDataset(external_datasets_list)  # type: ignore[list-item]
+    total_samples = len(combined_for_stats)
+    max_stats_samples = 50_000  # cap for speed; full dataset can be slow for 1M+ samples
+    indices = torch.randperm(total_samples, generator=generator).tolist()
+    if total_samples > max_stats_samples:
+        indices = indices[:max_stats_samples]
+        console.print(f"  [dim]Sampling {max_stats_samples:,} / {total_samples:,} for stats[/dim]")
+    s1 = torch.zeros(num_channels)
+    s2 = torch.zeros(num_channels)
+    n_total = 0
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("[cyan]Accumulating stats", total=len(indices))
+        for i in indices:
+            img, _ = combined_for_stats[i]
+            if isinstance(img, np.ndarray):
+                img = torch.from_numpy(img)
+            if img.ndim == 3 and img.shape[0] not in (1, 3) and img.shape[-1] in (1, 3):
+                img = img.permute(2, 0, 1)
+            img = img.float().unsqueeze(0)  # (1, C, H, W)
+            if img.numel() > 0:
+                b_s1, b_s2, b_n = _accumulate_stats_from_tensor(img)
+                s1 += b_s1
+                s2 += b_s2
+                n_total += b_n
+            progress.advance(task)
+    if n_total == 0:
+        raise ValueError("No pixels found when computing mean/std from external data")
+    mean_t = tuple((s1 / n_total).tolist())
+    std_t = tuple(torch.sqrt(torch.clamp(s2 / n_total - torch.tensor(mean_t) ** 2, min=1e-8)).tolist())
 
     if external_cache and external_cache_max_mb > 0:
         max_mb_per_worker = external_cache_max_mb / max(1, num_workers)
