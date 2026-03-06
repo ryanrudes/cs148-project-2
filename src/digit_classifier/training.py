@@ -12,6 +12,7 @@ Preserves every behavioural invariant from the original pipeline:
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import nullcontext
 from multiprocessing import cpu_count, freeze_support
 
@@ -70,6 +71,8 @@ def _setup_ddp() -> tuple[int, int, int]:
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if world_size > 1:
         import torch.distributed as dist
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
         backend = os.environ.get("DDP_BACKEND", "nccl")
         dist.init_process_group(backend=backend)
     return rank, world_size, local_rank
@@ -1272,6 +1275,7 @@ def train(cfg: Config) -> None:
             torch.cuda.synchronize()
         dist.barrier()
         console.print(f"[dim]Rank {rank}/{world_size}: barrier passed, wrapping DDP…[/dim]")
+        sys.stdout.flush()
         model = DDP(model, device_ids=[local_rank])
         console.print(f"[dim]Rank {rank}/{world_size}: DDP wrapped[/dim]")
 
