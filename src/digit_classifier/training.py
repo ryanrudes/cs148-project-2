@@ -1452,6 +1452,12 @@ def train(cfg: Config) -> None:
     # Resolve the effective batch size for logging (batch_sampler → None for .batch_size)
     effective_batch_size = cfg.data.batch_size
 
+    wandb_run_id: str | None = None
+    if tc.resume_path:
+        resume_dir = os.path.basename(os.path.dirname(os.path.abspath(tc.resume_path)))
+        if resume_dir != "local":
+            wandb_run_id = resume_dir
+
     if tc.wandb_enabled and rank == 0:
         wandb_config = _config_to_wandb_dict(cfg)
         # Runtime / resolved values (override or add to config)
@@ -1471,15 +1477,21 @@ def train(cfg: Config) -> None:
         wandb_config["std"] = std
         if compile_profiling is not None:
             wandb_config.update(compile_profiling)
-        wandb.init(project=tc.wandb_project, config=wandb_config)
+        if wandb_run_id is not None:
+            wandb.init(project=tc.wandb_project, id=wandb_run_id, resume="must", config=wandb_config)
+            checkpoint_dir = os.path.join("checkpoints", wandb_run_id)
+        else:
+            wandb.init(project=tc.wandb_project, config=wandb_config)
+            if tc.checkpoint_enabled:
+                checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
+                os.makedirs(checkpoint_dir, exist_ok=True)
+            else:
+                checkpoint_dir = "checkpoints/local"
         if tc.wandb_watch and tc.wandb_watch != "none":
             wandb.watch(model, log=tc.wandb_watch, log_freq=100)
-        if tc.checkpoint_enabled:
-            checkpoint_dir = os.path.join("checkpoints", wandb.run.id)
-            os.makedirs(checkpoint_dir, exist_ok=True)
     else:
         if tc.checkpoint_enabled and rank == 0:
-            checkpoint_dir = "checkpoints/local"
+            checkpoint_dir = os.path.join("checkpoints", wandb_run_id) if wandb_run_id else "checkpoints/local"
             os.makedirs(checkpoint_dir, exist_ok=True)
 
     # --- Training loop ---
