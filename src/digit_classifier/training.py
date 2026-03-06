@@ -1268,13 +1268,20 @@ def train(cfg: Config) -> None:
                 cuda_be.enable_flash_sdp(True)
             except Exception:
                 pass
-    pretrain_patch_size: int | None = None
+    # Patch size: from pretrain checkpoint, or from resume checkpoint (same arch required), or default.
+    patch_size_for_build: int | None = None
     if tc.pretrain_path and mc.model_type == "deit":
         pretrain_ckpt = torch.load(tc.pretrain_path, map_location=device, weights_only=False)
         pc = pretrain_ckpt.get("model_config", {})
-        pretrain_patch_size = pc.get("patch_size")
-        if pretrain_patch_size is None:
-            pretrain_patch_size = 14 if pc.get("deit_model", "base") == "huge" else 16
+        patch_size_for_build = pc.get("patch_size")
+        if patch_size_for_build is None:
+            patch_size_for_build = 14 if pc.get("deit_model", "base") == "huge" else 16
+    elif tc.resume_path and mc.model_type == "deit":
+        resume_preview = torch.load(tc.resume_path, map_location=device, weights_only=False)
+        rc = resume_preview.get("model_config", {})
+        patch_size_for_build = rc.get("patch_size")
+        if patch_size_for_build is None:
+            patch_size_for_build = 14 if rc.get("deit_model", "base") == "huge" else 16
 
     if mc.model_type == "resnext":
         model_name = "ResNeXt"
@@ -1294,7 +1301,7 @@ def train(cfg: Config) -> None:
             image_size=cfg.data.image_size,
             use_flash_attention=use_flash_attention,
             init_values=mc.layer_scale_init,
-            patch_size=pretrain_patch_size,
+            patch_size=patch_size_for_build,
         ).to(device)
     if world_size > 1:
         console.print(f"[dim]Rank {rank}/{world_size}: model built[/dim]")
