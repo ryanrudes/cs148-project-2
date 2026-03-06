@@ -482,6 +482,7 @@ def validate(
     use_amp: bool = True,
     progress_bars: bool = False,
     show_data_wait: bool = False,
+    progress_label: str = "Val",
 ) -> dict[str, float]:
     """Run one validation pass and return computed metrics + loss."""
     import time
@@ -494,7 +495,7 @@ def validate(
 
     total_batches = len(loader)
     val_columns: list = [
-        TextColumn("[bold cyan]Val[/]"),
+        TextColumn(f"[bold cyan]{progress_label}[/]"),
         BarColumn(),
         MofNCompleteColumn(),
         TextColumn("•"),
@@ -1159,6 +1160,7 @@ def train(cfg: Config) -> None:
                 use_amp=tc.amp_enabled,
                 progress_bars=tc.progress_bars or tc.show_data_wait,
                 show_data_wait=tc.show_data_wait,
+                progress_label="Test",
             )
 
         # --- Pre-restart checkpoint (before scheduler.step) ---
