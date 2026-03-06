@@ -653,30 +653,37 @@ def _log_epoch_table(
     val_ema: dict[str, float],
     lr: float,
     test_ema: dict[str, float] | None = None,
+    use_ema: bool = True,
 ) -> None:
     has_test = test_ema is not None
     table = Table(title=f"Epoch {epoch}", show_lines=True)
     table.add_column("Metric", style="bold")
     table.add_column("Train", justify="right")
-    table.add_column("Val (raw)", justify="right")
-    table.add_column("Val (EMA)", justify="right")
+    if use_ema:
+        table.add_column("Val (raw)", justify="right")
+        table.add_column("Val (EMA)", justify="right")
+    else:
+        table.add_column("Val", justify="right")
     if has_test:
-        table.add_column("Test (EMA)", justify="right")
+        table.add_column("Test" + (" (EMA)" if use_ema else ""), justify="right")
 
     all_keys = dict.fromkeys(
         list(train) + list(val_raw) + list(val_ema) + (list(test_ema) if test_ema else [])
     )
     for key in all_keys:
-        row = [
-            key,
-            f"{train.get(key, 0):.5f}",
-            f"{val_raw.get(key, 0):.5f}",
-            f"{val_ema.get(key, 0):.5f}",
-        ]
+        if use_ema:
+            row = [
+                key,
+                f"{train.get(key, 0):.5f}",
+                f"{val_raw.get(key, 0):.5f}",
+                f"{val_ema.get(key, 0):.5f}",
+            ]
+        else:
+            row = [key, f"{train.get(key, 0):.5f}", f"{val_ema.get(key, 0):.5f}"]
         if has_test:
             row.append(f"{test_ema.get(key, 0):.5f}")
         table.add_row(*row)
-    lr_row = ["lr", f"{lr:.2e}", "", ""]
+    lr_row = ["lr", f"{lr:.2e}", "", ""] if use_ema else ["lr", f"{lr:.2e}", ""]
     if has_test:
         lr_row.append("")
     table.add_row(*lr_row)
@@ -1198,6 +1205,7 @@ def train(cfg: Config) -> None:
         _log_epoch_table(
             epoch + 1, train_metrics, val_metrics_raw, val_metrics_ema, current_lr,
             test_ema=test_metrics_ema,
+            use_ema=ema is not None,
         )
 
         if tc.wandb_enabled:
@@ -1205,11 +1213,15 @@ def train(cfg: Config) -> None:
                 "epoch": epoch + 1,
                 "lr": current_lr,
                 **{f"train/{k}": v for k, v in train_metrics.items()},
-                **{f"val_raw/{k}": v for k, v in val_metrics_raw.items()},
-                **{f"val_ema/{k}": v for k, v in val_metrics_ema.items()},
             }
+            if ema is not None:
+                log_dict.update({f"val_raw/{k}": v for k, v in val_metrics_raw.items()})
+                log_dict.update({f"val_ema/{k}": v for k, v in val_metrics_ema.items()})
+            else:
+                log_dict.update({f"val/{k}": v for k, v in val_metrics_ema.items()})
             if test_metrics_ema is not None:
-                log_dict.update({f"test_ema/{k}": v for k, v in test_metrics_ema.items()})
+                prefix = "test_ema" if ema is not None else "test"
+                log_dict.update({f"{prefix}/{k}": v for k, v in test_metrics_ema.items()})
             wandb.log(log_dict)
 
         # --- Best-model checkpoint (only when we ran validation) ---
