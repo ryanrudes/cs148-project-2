@@ -59,6 +59,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             external_val_source=getattr(args, "external_val_source", "MNIST Test"),
             primary_fraction=args.primary_fraction,
             test_dataset_path=args.test_dataset,
+            test_preload=not getattr(args, "no_preload_test", False),
             augment_scheme=args.augment_scheme,
             num_workers=args.num_workers,
             calibrate_workers=getattr(args, "calibrate_workers", False),
@@ -230,6 +231,7 @@ def _handle_eval(args: argparse.Namespace) -> None:
         image_size=args.size if args.size is not None else None,
         batch_size=args.batch_size,
         device=args.device,
+        test_preload=not getattr(args, "no_preload_test", False),
     )
 
 
@@ -352,6 +354,8 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--primary-fraction", type=float, default=0.95)
     tr.add_argument("--test-dataset", type=str, default=None,
                     help="Pareidolia output dir (e.g. dataset_out) for test evaluation; no augmentation")
+    tr.add_argument("--no-preload-test", action="store_true",
+                    help="Load pareidolia test images on demand instead of preloading (for huge test sets)")
     tr.add_argument("--augment-scheme", default="yolo",
                     choices=["yolo", "three_augment", "autoaugment"],
                     help="Augmentation pipeline: yolo (default), three_augment (DeiT-III), autoaugment (SVHN)")
@@ -506,6 +510,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Image size (default: from checkpoint, else 224)")
     ev.add_argument("--batch-size", type=int, default=128)
     ev.add_argument("--device", default="auto")
+    ev.add_argument("--no-preload-test", action="store_true",
+                    help="Load test images on demand instead of preloading")
 
     # --- generate-pareidolia ---
     gp = sub.add_parser(

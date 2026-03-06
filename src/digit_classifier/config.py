@@ -27,6 +27,7 @@ class DataConfig:
     external_only: bool = False  # train only on external data; skip loading primary dataset
     external_val_source: str = "MNIST Test"  # which external to use for validation when external_only
     test_dataset_path: str | None = None  # Pareidolia output dir (e.g. dataset_out) for test eval
+    test_preload: bool = True  # preload pareidolia test images into memory (disable for huge sets)
     primary_fraction: float = 0.95
     num_workers: int = -1  # -1 = auto (cpu_count - 1, capped)
     calibrate_workers: bool = False  # benchmark to find best num_workers before training

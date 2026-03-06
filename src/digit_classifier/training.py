@@ -291,6 +291,7 @@ def run_eval(
     image_size: int | None = None,
     batch_size: int = 128,
     device: str = "auto",
+    test_preload: bool = True,
 ) -> dict[str, float]:
     """Evaluate a checkpoint (EMA model) on the pareidolia test dataset."""
     if device == "auto":
@@ -320,6 +321,7 @@ def run_eval(
         size=image_size,
         mean=mean,
         std=std,
+        preload=test_preload,
     )
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -903,6 +905,7 @@ def train(cfg: Config) -> None:
             size=cfg.data.image_size,
             mean=mean,
             std=std,
+            preload=cfg.data.test_preload,
         )
         console.print(
             f"Test (pareidolia): {len(test_dataset)} samples (no augmentation)"
