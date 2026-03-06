@@ -1161,6 +1161,8 @@ def train(cfg: Config) -> None:
         rank=rank,
         world_size=world_size,
     )
+    if world_size > 1:
+        console.print(f"[dim]Rank {rank}/{world_size}: dataloaders ready[/dim]")
 
     # --- Mixup / CutMix ---
     tc = cfg.training
@@ -1216,6 +1218,8 @@ def train(cfg: Config) -> None:
             use_flash_attention=use_flash_attention,
             init_values=mc.layer_scale_init,
         ).to(device)
+    if world_size > 1:
+        console.print(f"[dim]Rank {rank}/{world_size}: model built[/dim]")
 
     start_epoch = 0
     resume_ckpt: dict | None = None
@@ -1263,6 +1267,7 @@ def train(cfg: Config) -> None:
 
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
+        console.print(f"[dim]Rank {rank}/{world_size}: DDP wrapped[/dim]")
 
     param_groups = _get_param_groups(
         model.module if hasattr(model, "module") else model,
@@ -1285,6 +1290,8 @@ def train(cfg: Config) -> None:
                 console.print(f"[dim]Using compile mode: {best_mode}[/dim]")
         else:
             model = torch.compile(model)
+    if world_size > 1 and tc.compile_model:
+        console.print(f"[dim]Rank {rank}/{world_size}: torch.compile done[/dim]")
 
     if tc.ema_enabled:
         ema_base = model.module if hasattr(model, "module") else model
@@ -1323,6 +1330,8 @@ def train(cfg: Config) -> None:
     scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer, schedulers=[warmup_sched, main_sched], milestones=[tc.warmup_epochs],
     )
+    if world_size > 1:
+        console.print(f"[dim]Rank {rank}/{world_size}: optimizer/scheduler ready[/dim]")
     if warm_restart_epochs and rank == 0:
         console.print(f"[bold]Warm-restart epochs:[/bold] {warm_restart_epochs}")
 
