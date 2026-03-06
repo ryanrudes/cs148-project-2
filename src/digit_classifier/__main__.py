@@ -110,6 +110,7 @@ def _handle_train(args: argparse.Namespace) -> None:
             checkpoint_enabled=not args.no_checkpoint,
             val_every_n_epochs=args.val_every_n_epochs,
             progress_bars=getattr(args, "progress_bars", False),
+            show_data_wait=getattr(args, "show_data_wait", False),
             wandb_watch=args.wandb_watch,
             resume_path=getattr(args, "resume", None),
             pretrain_path=getattr(args, "pretrain", None),
@@ -419,6 +420,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Run validation every N epochs (1 = every epoch)")
     tr.add_argument("--progress-bars", action="store_true",
                     help="Show Rich progress bars for each epoch's train/val batches")
+    tr.add_argument("--show-data-wait", action="store_true",
+                    help="Show %% of time GPU waits for data in progress bar (enables progress bars)")
     tr.add_argument("--wandb-watch", default="gradients",
                     choices=["gradients", "all", "none"],
                     help="wandb.watch mode: gradients, all, or none")

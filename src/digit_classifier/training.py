@@ -21,7 +21,7 @@ import torch.nn as nn
 import wandb
 from rich.console import Console
 from rich.pretty import pretty_repr
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.table import Table
 from timm.loss import SoftTargetCrossEntropy
 from torch import Tensor
@@ -367,10 +367,13 @@ def train_epoch(
     grad_clip_norm: float = 1.0,
     use_amp: bool = True,
     progress_bars: bool = False,
+    show_data_wait: bool = False,
     epoch: int = 0,
     total_epochs: int = 1,
 ) -> dict[str, float]:
     """Run one training epoch and return computed metrics + loss."""
+    import time
+
     model.train()
     running_loss = 0.0
     num_batches = 0
@@ -378,16 +381,22 @@ def train_epoch(
     amp_ctx = autocast(device_type=device.type) if use_amp else nullcontext()
 
     total_batches = len(loader)
+    columns: list = [
+        TextColumn("[bold blue]Train[/] Epoch {task.fields[epoch]}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        TimeRemainingColumn(),
+    ]
+    if show_data_wait:
+        columns.append(TextColumn("•"))
+        columns.append(TextColumn("wait {task.fields[wait_pct]:.0f}%"))
+    columns.append(TextColumn("• loss {task.fields[loss]:.4f}"))
+
     progress_ctx = (
-        Progress(
-            TextColumn("[bold blue]Train[/] Epoch {task.fields[epoch]}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TextColumn("•"),
-            TimeElapsedColumn(),
-            TextColumn("• loss {task.fields[loss]:.4f}"),
-            console=console,
-        )
+        Progress(*columns, console=console)
         if progress_bars
         else nullcontext()
     )
@@ -399,9 +408,24 @@ def train_epoch(
                 total=total_batches,
                 epoch=f"{epoch + 1}/{total_epochs}",
                 loss=0.0,
+                wait_pct=0.0,
             )
 
-        for batch_idx, (images, labels) in enumerate(loader):
+        loader_iter = iter(loader)
+        data_time = 0.0
+        compute_time = 0.0
+
+        for batch_idx in range(total_batches):
+            t0 = time.perf_counter()
+            try:
+                images, labels = next(loader_iter)
+            except StopIteration:
+                break
+            t1 = time.perf_counter()
+            data_time += t1 - t0
+
+            if device.type == "cuda":
+                torch.cuda.synchronize()
             if images.dtype != torch.float32:
                 images = images.float()
             images = images.to(device, non_blocking=pin)
@@ -434,8 +458,15 @@ def train_epoch(
             if ema is not None:
                 ema.update_parameters(model)
 
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t2 = time.perf_counter()
+            compute_time += t2 - t1
+
             if progress is not None:
-                progress.update(task, advance=1, loss=running_loss)
+                total = data_time + compute_time
+                wait_pct = (data_time / total * 100) if total > 0 else 0.0
+                progress.update(task, advance=1, loss=running_loss, wait_pct=wait_pct)
 
     result = _compute_and_reset(metrics)
     result["cross_entropy"] = running_loss
@@ -450,8 +481,11 @@ def validate(
     device: torch.device,
     use_amp: bool = True,
     progress_bars: bool = False,
+    show_data_wait: bool = False,
 ) -> dict[str, float]:
     """Run one validation pass and return computed metrics + loss."""
+    import time
+
     model.eval()
     running_loss = 0.0
     num_batches = 0
@@ -459,24 +493,44 @@ def validate(
     amp_ctx = autocast(device_type=device.type) if use_amp else nullcontext()
 
     total_batches = len(loader)
+    val_columns: list = [
+        TextColumn("[bold cyan]Val[/]"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        TimeRemainingColumn(),
+    ]
+    if show_data_wait:
+        val_columns.append(TextColumn("•"))
+        val_columns.append(TextColumn("wait {task.fields[wait_pct]:.0f}%"))
+
     progress_ctx = (
-        Progress(
-            TextColumn("[bold cyan]Val[/]"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TextColumn("•"),
-            TimeElapsedColumn(),
-            console=console,
-        )
+        Progress(*val_columns, console=console)
         if progress_bars
         else nullcontext()
     )
 
     with torch.no_grad(), progress_ctx as progress:
         if progress_bars:
-            task = progress.add_task("", total=total_batches)
+            task = progress.add_task("", total=total_batches, wait_pct=0.0)
 
-        for batch_idx, (images, labels) in enumerate(loader):
+        loader_iter = iter(loader)
+        data_time = 0.0
+        compute_time = 0.0
+
+        for batch_idx in range(total_batches):
+            t0 = time.perf_counter()
+            try:
+                images, labels = next(loader_iter)
+            except StopIteration:
+                break
+            t1 = time.perf_counter()
+            data_time += t1 - t0
+
+            if device.type == "cuda":
+                torch.cuda.synchronize()
             if images.dtype != torch.float32:
                 images = images.float()
             images = images.to(device, non_blocking=pin)
@@ -490,8 +544,15 @@ def validate(
             running_loss += (loss.item() - running_loss) / num_batches
             _update_metrics(metrics, logits, labels)
 
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t2 = time.perf_counter()
+            compute_time += t2 - t1
+
             if progress is not None:
-                progress.update(task, advance=1)
+                total = data_time + compute_time
+                wait_pct = (data_time / total * 100) if total > 0 else 0.0
+                progress.update(task, advance=1, wait_pct=wait_pct)
 
     result = _compute_and_reset(metrics)
     result["cross_entropy"] = running_loss
@@ -1064,7 +1125,8 @@ def train(cfg: Config) -> None:
             model, train_loader, train_criterion, optimizer, metrics, scaler,
             device, mixup_fn=active_mixup, ema=ema, grad_clip_norm=tc.grad_clip_norm,
             use_amp=tc.amp_enabled,
-            progress_bars=tc.progress_bars,
+            progress_bars=tc.progress_bars or tc.show_data_wait,
+            show_data_wait=tc.show_data_wait,
             epoch=epoch,
             total_epochs=tc.epochs,
         )
@@ -1072,12 +1134,16 @@ def train(cfg: Config) -> None:
         if do_validate:
             val_metrics_raw = validate(
                 model, val_loader, val_criterion, metrics, device,
-                use_amp=tc.amp_enabled, progress_bars=tc.progress_bars,
+                use_amp=tc.amp_enabled,
+                progress_bars=tc.progress_bars or tc.show_data_wait,
+                show_data_wait=tc.show_data_wait,
             )
             if ema is not None:
                 val_metrics_ema = validate(
                     ema, val_loader, val_criterion, metrics, device,
-                    use_amp=tc.amp_enabled, progress_bars=tc.progress_bars,
+                    use_amp=tc.amp_enabled,
+                    progress_bars=tc.progress_bars or tc.show_data_wait,
+                    show_data_wait=tc.show_data_wait,
                 )
             else:
                 val_metrics_ema = dict(val_metrics_raw)
@@ -1090,7 +1156,9 @@ def train(cfg: Config) -> None:
             eval_model = ema if ema is not None else model
             test_metrics_ema = validate(
                 eval_model, test_loader, val_criterion, metrics, device,
-                use_amp=tc.amp_enabled, progress_bars=tc.progress_bars,
+                use_amp=tc.amp_enabled,
+                progress_bars=tc.progress_bars or tc.show_data_wait,
+                show_data_wait=tc.show_data_wait,
             )
 
         # --- Pre-restart checkpoint (before scheduler.step) ---

@@ -107,6 +107,7 @@ class TrainingConfig:
     checkpoint_enabled: bool = True  # when False, no checkpoints are saved to disk or wandb
     val_every_n_epochs: int = 1  # validate every N epochs (1 = every epoch)
     progress_bars: bool = False  # show Rich progress bars for each epoch's batches
+    show_data_wait: bool = False  # show % of time GPU waits for data (requires progress_bars)
     wandb_watch: str = "gradients"  # "gradients" | "all" | "none"
     resume_path: str | None = None  # full resume (optimizer, scheduler, epoch); same resolution
     pretrain_path: str | None = None  # load weights only; allows different resolution for fine-tune
