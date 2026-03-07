@@ -1549,7 +1549,7 @@ def train(cfg: Config) -> None:
         # Pin accuracy metrics to [0,1] so resume doesn't show scale discontinuity (e.g. % vs decimal)
         for prefix in ("train/", "val/", "val_raw/", "val_ema/", "test/", "test_ema/"):
             for name in ("accuracy", "top_2_accuracy", "top_3_accuracy", "top_5_accuracy", "top_9_accuracy", "f1_score"):
-                wandb.define_metric(f"{prefix}{name}", min=0.0, max=1.0)
+                wandb.define_metric(f"{prefix}{name}")
     else:
         if tc.checkpoint_enabled and rank == 0:
             checkpoint_dir = os.path.join("checkpoints", wandb_run_id) if wandb_run_id else "checkpoints/local"
