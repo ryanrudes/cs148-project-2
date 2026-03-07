@@ -297,7 +297,8 @@ def _filter_state_dict_by_shape(
 def _infer_model_type_from_state_dict(state_dict: dict) -> str:
     """Infer model type from state dict keys (for old checkpoints without model_type)."""
     keys = list(state_dict.keys())
-    if any(k.startswith("blocks.") for k in keys):
+    # DeiT has blocks.0, blocks.1, ... (may be prefixed with module. or _orig_mod.)
+    if any("blocks." in k for k in keys):
         return "deit"
     return "resnext"
 

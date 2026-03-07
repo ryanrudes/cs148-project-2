@@ -158,6 +158,13 @@ def _handle_export_pipeline(args: argparse.Namespace) -> None:
         args.checkpoint, dev, model_type=getattr(args, "model_type", None)
     )
 
+    # ViT/DeiT uploads must use pipeline-vit.pt (ee148a-project requirement)
+    is_vit = hasattr(model, "patch_embed")
+    if is_vit and args.hf_filename == "pipeline-cnn.pt":
+        args.hf_filename = "pipeline-vit.pt"
+    if is_vit and args.output == "pipeline-cnn.pt":
+        args.output = "pipeline-vit.pt"
+
     input_size = args.size if args.size is not None else ckpt.get("model_config", {}).get("image_size", 224)
 
     # Determine mean/std: checkpoint > CLI args > fallback 0.5/0.5
@@ -493,7 +500,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--input-channels", type=int, choices=[1, 3], default=3)
     ep.add_argument("--push-to-hf", action="store_true", help="Upload compiled pipeline to HuggingFace Hub (requires HF_TOKEN or --hf-token and --hf-repo)")
     ep.add_argument("--hf-repo", help="HuggingFace repo id (e.g. username/repo)")
-    ep.add_argument("--hf-filename", default="pipeline-cnn.pt", help="Filename to use on the Hub")
+    ep.add_argument("--hf-filename", default="pipeline-cnn.pt",
+                    help="Filename on the Hub (default: pipeline-vit.pt for ViT/DeiT, pipeline-cnn.pt for ResNeXt)")
     ep.add_argument("--hf-token", help="HuggingFace token (optional; falls back to HF_TOKEN env var)")
     ep.add_argument("--mean", type=float, nargs="+", help="Per-channel mean for normalization (e.g. 0.13 0.13 0.13 for RGB). Required if checkpoint lacks mean/std.")
     ep.add_argument("--std", type=float, nargs="+", help="Per-channel std for normalization (e.g. 0.31 0.31 0.31 for RGB). Required if checkpoint lacks mean/std.")
