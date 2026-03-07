@@ -1237,6 +1237,8 @@ def train(cfg: Config) -> None:
     if rank == 0:
         console.print(train_val_msg)
 
+    _mean_std_warned: list[bool] = [False]  # warn once when checkpoint uses fallback mean/std
+
     train_loader, val_loader, test_loader = _create_dataloaders(
         train_dataset, val_dataset, cfg.data.batch_size,
         cfg.data.primary_fraction, device,
@@ -1710,7 +1712,12 @@ def train(cfg: Config) -> None:
                 "model_config": _get_model_config_for_checkpoint(
                     mc, cfg.data.image_size, patch_size=_get_patch_size_from_model(model_for_save)
                 ),
+                "mean": list(mean) if mean is not None else [0.5] * 3,
+                "std": list(std) if std is not None else [0.5] * 3,
             }
+            if (mean is None or std is None) and not _mean_std_warned[0]:
+                console.print("[yellow]Checkpoint missing mean/std from dataset; using 0.5/0.5. Export may not match training normalization.[/yellow]")
+                _mean_std_warned[0] = True
             if ema is not None:
                 save_dict["ema_state_dict"] = ema.state_dict()
 
@@ -1784,7 +1791,12 @@ def train(cfg: Config) -> None:
                     "model_config": _get_model_config_for_checkpoint(
                         mc, cfg.data.image_size, patch_size=_get_patch_size_from_model(model_for_save)
                     ),
+                    "mean": list(mean) if mean is not None else [0.5] * 3,
+                    "std": list(std) if std is not None else [0.5] * 3,
                 }
+                if (mean is None or std is None) and not _mean_std_warned[0]:
+                    console.print("[yellow]Checkpoint missing mean/std from dataset; using 0.5/0.5. Export may not match training normalization.[/yellow]")
+                    _mean_std_warned[0] = True
                 if ema is not None:
                     save_dict["ema_state_dict"] = ema.state_dict()
 
@@ -1832,7 +1844,12 @@ def train(cfg: Config) -> None:
                     "model_config": _get_model_config_for_checkpoint(
                         mc, cfg.data.image_size, patch_size=_get_patch_size_from_model(model_for_save_test)
                     ),
+                    "mean": list(mean) if mean is not None else [0.5] * 3,
+                    "std": list(std) if std is not None else [0.5] * 3,
                 }
+                if (mean is None or std is None) and not _mean_std_warned[0]:
+                    console.print("[yellow]Checkpoint missing mean/std from dataset; using 0.5/0.5. Export may not match training normalization.[/yellow]")
+                    _mean_std_warned[0] = True
                 if ema is not None:
                     save_dict_test["ema_state_dict"] = ema.state_dict()
 
@@ -1878,7 +1895,12 @@ def train(cfg: Config) -> None:
                 "model_config": _get_model_config_for_checkpoint(
                     mc, cfg.data.image_size, patch_size=_get_patch_size_from_model(model_for_save_latest)
                 ),
+                "mean": list(mean) if mean is not None else [0.5] * 3,
+                "std": list(std) if std is not None else [0.5] * 3,
             }
+            if (mean is None or std is None) and not _mean_std_warned[0]:
+                console.print("[yellow]Checkpoint missing mean/std from dataset; using 0.5/0.5. Export may not match training normalization.[/yellow]")
+                _mean_std_warned[0] = True
             if ema is not None:
                 save_dict_latest["ema_state_dict"] = ema.state_dict()
 
