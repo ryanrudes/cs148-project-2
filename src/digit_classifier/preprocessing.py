@@ -56,20 +56,21 @@ def download_dataset(
 # Load raw images
 # ---------------------------------------------------------------------------
 
-def load_raw_images(data_dir: str) -> tuple[list[Image.Image], list[int]]:
-    """Load JPEG images and parse labels from filenames.
+def load_raw_images(data_dir: str) -> tuple[list[np.ndarray], list[int]]:
+    """Load JPEG images into memory as numpy arrays and parse labels from filenames.
 
     Expected filename pattern: ``*_label<digit>.jpg``.
     """
-    images: list[Image.Image] = []
+    images: list[np.ndarray] = []
     labels: list[int] = []
 
     filenames = sorted(f for f in os.listdir(data_dir) if f.endswith(".jpg"))
     for fname in filenames:
         path = os.path.join(data_dir, fname)
-        img = Image.open(path)
+        with Image.open(path) as img:
+            img_array = np.array(img.convert("RGB"))
         label = int(path.split("_")[-1].replace(".jpg", "").replace("label", ""))
-        images.append(img)
+        images.append(img_array)
         labels.append(label)
 
     return images, labels
@@ -88,7 +89,7 @@ def print_label_distribution(labels: list[int]) -> None:
 # ---------------------------------------------------------------------------
 
 def preprocess_images(
-    images: list[Image.Image],
+    images: list[np.ndarray],
     color: bool,
     size: int,
 ) -> list[np.ndarray]:
@@ -109,8 +110,9 @@ def preprocess_images(
             f"[cyan]Preprocessing {len(images):,} images → {size}×{size} {'RGB' if color else 'gray'}",
             total=len(images),
         )
-        for img in images:
-            tensor = preprocessor(img)
+        for img_array in images:
+            pil_img = Image.fromarray(img_array)
+            tensor = preprocessor(pil_img)
             results.append(tensor.numpy())
             progress.advance(task)
 
