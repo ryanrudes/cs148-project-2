@@ -25,7 +25,7 @@ def load_mnist_in_the_wild(
     if not path.exists():
         raise FileNotFoundError(
             f"Dataset not found at {path}. Run: python -m digit_classifier download && "
-            f"python -m digit_classifier preprocess --name {dataset_name} --color --size 224"
+            f"python -m digit_classifier preprocess --name {dataset_name} --color --size {cfg.image_size}"
         )
     data = np.load(path)
     images = torch.from_numpy(data["images"])
