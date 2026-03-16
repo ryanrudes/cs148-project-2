@@ -21,6 +21,7 @@ dependencies = [
     "opencv-python>=4.8",
     "ultralytics>=8.0",
     "ipywidgets>=8.0",
+    "transformers",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,9 @@ pareidolia = [
     "pillow>=10.0",
     "tqdm>=4.0",
     "google-genai>=1.0",
+    "plotly>=5.0",
+    "umap-learn>=0.5",
+    "scikit-learn>=1.0",
 ]
 
 [project.scripts]
