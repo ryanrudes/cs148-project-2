@@ -391,134 +391,141 @@ def train_clip_fold(
     best_checkpoint = None
     global_step = 0
     non_finite_detected = False
+    interrupted = False
     epochs_since_improvement = 0
 
-    for epoch in range(cfg.epochs):
-        mean_train_loss = 0.0
-        num_train_batches = 0
-        num_train_correct = 0
-        num_train_total = 0
+    try:
+        for epoch in range(cfg.epochs):
+            mean_train_loss = 0.0
+            num_train_batches = 0
+            num_train_correct = 0
+            num_train_total = 0
 
-        classifier.train()
-        for batch in train_dataloader:
-            images, labels = batch
-            images = images.to(device)
-            labels = labels.to(device)
-            outputs = classifier(images)
-            loss = criterion(outputs, labels)
-            if not torch.isfinite(loss):
-                log.warning(
-                    f"Fold {fold}, Epoch {epoch+1}: non-finite training loss detected "
-                    f"(loss={loss.item()}, head_type={cfg.head_type}, layer_norm={cfg.layer_norm}, "
-                    f"lr={cfg.lr}, batch_size={cfg.batch_size})"
-                )
-                non_finite_detected = True
-                break
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
-            optimizer.step()
-
-            num_train_batches += 1
-            mean_train_loss += (loss.item() - mean_train_loss) / num_train_batches
-            new_correct = (outputs.argmax(dim=-1) == labels).sum().item()
-            num_train_correct += new_correct
-            num_train_total += labels.shape[0]
-
-            global_step += 1
-            batch_metrics = {
-                "global_step": global_step,
-                "batch/loss": loss.item(),
-                "batch/acc": new_correct / labels.shape[0],
-            }
-            if run is not None:
-                run.log(batch_metrics)
-
-        if non_finite_detected:
-            break
-
-        train_accuracy = num_train_correct / num_train_total
-
-        mean_val_loss = 0.0
-        num_val_batches = 0
-        num_val_correct = 0
-        num_val_total = 0
-        classifier.eval()
-        with torch.inference_mode():
-            for images, labels in val_dataloader:
+            classifier.train()
+            for batch in train_dataloader:
+                images, labels = batch
                 images = images.to(device)
                 labels = labels.to(device)
                 outputs = classifier(images)
                 loss = criterion(outputs, labels)
                 if not torch.isfinite(loss):
                     log.warning(
-                        f"Fold {fold}, Epoch {epoch+1}: non-finite validation loss detected "
+                        f"Fold {fold}, Epoch {epoch+1}: non-finite training loss detected "
                         f"(loss={loss.item()}, head_type={cfg.head_type}, layer_norm={cfg.layer_norm}, "
                         f"lr={cfg.lr}, batch_size={cfg.batch_size})"
                     )
                     non_finite_detected = True
                     break
-                num_val_batches += 1
-                mean_val_loss += (loss.item() - mean_val_loss) / num_val_batches
-                batch_correct = (outputs.argmax(dim=-1) == labels).sum().item()
-                num_val_correct += batch_correct
-                num_val_total += labels.shape[0]
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
+                optimizer.step()
 
-        if non_finite_detected:
-            best_val_accuracy = float("-inf")
-            best_epoch = epoch + 1
-            if run is not None:
-                run.summary["failed_non_finite"] = 1
-                run.summary["failure_epoch"] = epoch + 1
-            break
+                num_train_batches += 1
+                mean_train_loss += (loss.item() - mean_train_loss) / num_train_batches
+                new_correct = (outputs.argmax(dim=-1) == labels).sum().item()
+                num_train_correct += new_correct
+                num_train_total += labels.shape[0]
 
-        val_accuracy = num_val_correct / num_val_total
-        log.info(
-            f"Fold {fold}, Epoch {epoch+1}, Loss: {mean_train_loss:.4f}, Val Loss: {mean_val_loss:.4f}, "
-            f"Train Acc: {train_accuracy:.4f}, Val Acc: {val_accuracy:.4f}"
-        )
+                global_step += 1
+                batch_metrics = {
+                    "global_step": global_step,
+                    "batch/loss": loss.item(),
+                    "batch/acc": new_correct / labels.shape[0],
+                }
+                if run is not None:
+                    run.log(batch_metrics)
 
-        improved = val_accuracy > (best_val_accuracy + cfg.early_stopping_min_delta)
-        if improved:
-            best_val_accuracy = val_accuracy
-            best_epoch = epoch + 1
-            epochs_since_improvement = 0
-            log.info(f"Fold {fold}: new best validation accuracy: {best_val_accuracy:.4f}")
-            best_checkpoint = {
-                "fold": fold,
-                "epoch": best_epoch,
-                "classifier_state_dict": copy.deepcopy(classifier.state_dict()),
-                "best_val_acc": best_val_accuracy,
-            }
-        else:
-            epochs_since_improvement += 1
+            if non_finite_detected:
+                break
 
-        epoch_metrics = {
-            "epoch": epoch + 1,
-            "train/loss": mean_train_loss,
-            "train/acc": train_accuracy,
-            "val/loss": mean_val_loss,
-            "val/acc": val_accuracy,
-            "val/best_acc": best_val_accuracy,
-        }
-        if run is not None:
-            run.log(epoch_metrics)
+            train_accuracy = num_train_correct / num_train_total
 
-        if cfg.early_stopping_patience is not None and epochs_since_improvement >= cfg.early_stopping_patience:
+            mean_val_loss = 0.0
+            num_val_batches = 0
+            num_val_correct = 0
+            num_val_total = 0
+            classifier.eval()
+            with torch.inference_mode():
+                for images, labels in val_dataloader:
+                    images = images.to(device)
+                    labels = labels.to(device)
+                    outputs = classifier(images)
+                    loss = criterion(outputs, labels)
+                    if not torch.isfinite(loss):
+                        log.warning(
+                            f"Fold {fold}, Epoch {epoch+1}: non-finite validation loss detected "
+                            f"(loss={loss.item()}, head_type={cfg.head_type}, layer_norm={cfg.layer_norm}, "
+                            f"lr={cfg.lr}, batch_size={cfg.batch_size})"
+                        )
+                        non_finite_detected = True
+                        break
+                    num_val_batches += 1
+                    mean_val_loss += (loss.item() - mean_val_loss) / num_val_batches
+                    batch_correct = (outputs.argmax(dim=-1) == labels).sum().item()
+                    num_val_correct += batch_correct
+                    num_val_total += labels.shape[0]
+
+            if non_finite_detected:
+                best_val_accuracy = float("-inf")
+                best_epoch = epoch + 1
+                if run is not None:
+                    run.summary["failed_non_finite"] = 1
+                    run.summary["failure_epoch"] = epoch + 1
+                break
+
+            val_accuracy = num_val_correct / num_val_total
             log.info(
-                f"Fold {fold}: early stopping at epoch {epoch+1} "
-                f"(best val acc {best_val_accuracy:.4f} at epoch {best_epoch})"
+                f"Fold {fold}, Epoch {epoch+1}, Loss: {mean_train_loss:.4f}, Val Loss: {mean_val_loss:.4f}, "
+                f"Train Acc: {train_accuracy:.4f}, Val Acc: {val_accuracy:.4f}"
             )
+
+            improved = val_accuracy > (best_val_accuracy + cfg.early_stopping_min_delta)
+            if improved:
+                best_val_accuracy = val_accuracy
+                best_epoch = epoch + 1
+                epochs_since_improvement = 0
+                log.info(f"Fold {fold}: new best validation accuracy: {best_val_accuracy:.4f}")
+                best_checkpoint = {
+                    "fold": fold,
+                    "epoch": best_epoch,
+                    "classifier_state_dict": copy.deepcopy(classifier.state_dict()),
+                    "best_val_acc": best_val_accuracy,
+                }
+            else:
+                epochs_since_improvement += 1
+
+            epoch_metrics = {
+                "epoch": epoch + 1,
+                "train/loss": mean_train_loss,
+                "train/acc": train_accuracy,
+                "val/loss": mean_val_loss,
+                "val/acc": val_accuracy,
+                "val/best_acc": best_val_accuracy,
+            }
             if run is not None:
-                run.summary["early_stopped"] = 1
-                run.summary["early_stop_epoch"] = epoch + 1
-            break
+                run.log(epoch_metrics)
+
+            if cfg.early_stopping_patience is not None and epochs_since_improvement >= cfg.early_stopping_patience:
+                log.info(
+                    f"Fold {fold}: early stopping at epoch {epoch+1} "
+                    f"(best val acc {best_val_accuracy:.4f} at epoch {best_epoch})"
+                )
+                if run is not None:
+                    run.summary["early_stopped"] = 1
+                    run.summary["early_stop_epoch"] = epoch + 1
+                break
+    except KeyboardInterrupt:
+        interrupted = True
+        log.warning(f"Fold {fold}: interrupted by user")
 
     if run is not None:
         run.summary["best_val_acc"] = best_val_accuracy
         run.summary["best_epoch"] = best_epoch
         run.summary["fold"] = fold
-        run.finish()
+        if interrupted:
+            run.summary["interrupted"] = 1
+        run.finish(exit_code=130 if interrupted else 0)
 
     return {
         "fold": fold,
@@ -526,6 +533,7 @@ def train_clip_fold(
         "best_epoch": best_epoch,
         "checkpoint": best_checkpoint,
         "failed_non_finite": non_finite_detected,
+        "interrupted": interrupted,
     }
 
 def run_clip_fine_tuning(
@@ -608,8 +616,15 @@ def run_clip_fine_tuning(
         )
         fold_results.append(result)
 
+        if result["interrupted"]:
+            log.warning("Cross-validation interrupted by user")
+            break
+
         if best_overall is None or result["best_val_acc"] > best_overall["best_val_acc"]:
             best_overall = result
+
+    if not fold_results:
+        raise RuntimeError("No fold results were produced")
 
     fold_accuracies = [result["best_val_acc"] if np.isfinite(result["best_val_acc"]) else 0.0 for result in fold_results]
     mean_accuracy = float(np.mean(fold_accuracies))
@@ -643,6 +658,7 @@ def run_clip_fine_tuning(
             parent_run.summary["cv/best_fold"] = best_overall["fold"] if best_overall is not None else None
             parent_run.summary["cv/best_fold_val_acc"] = best_overall["best_val_acc"] if best_overall is not None else None
             parent_run.summary["cv/num_failed_folds"] = sum(int(result["failed_non_finite"]) for result in fold_results)
+            parent_run.summary["cv/interrupted"] = int(any(result["interrupted"] for result in fold_results))
             parent_run.log({"cv/folds": fold_table})
             for result in fold_results:
                 parent_run.summary[f"cv/fold_{result['fold']}_best_val_acc"] = result["best_val_acc"]
@@ -662,6 +678,7 @@ def run_clip_fine_tuning(
             aggregate_run.summary["cv/best_fold"] = best_overall["fold"] if best_overall is not None else None
             aggregate_run.summary["cv/best_fold_val_acc"] = best_overall["best_val_acc"] if best_overall is not None else None
             aggregate_run.summary["cv/num_failed_folds"] = sum(int(result["failed_non_finite"]) for result in fold_results)
+            aggregate_run.summary["cv/interrupted"] = int(any(result["interrupted"] for result in fold_results))
             aggregate_run.log({"cv/folds": fold_table})
             aggregate_run.finish()
 
@@ -702,7 +719,10 @@ def build_clip_sweep_config(cfg: CLIPConfig) -> dict:
 
 
 def run_clip_sweep_trial(base_cfg: CLIPConfig):
-    with wandb.init(project=base_cfg.sweep_project, job_type="sweep-trial") as parent_run:
+    parent_run = None
+    interrupted = False
+    try:
+        parent_run = wandb.init(project=base_cfg.sweep_project, job_type="sweep-trial")
         cfg = copy.deepcopy(base_cfg)
         wconfig = wandb.config
 
@@ -743,6 +763,17 @@ def run_clip_sweep_trial(base_cfg: CLIPConfig):
         freeze(model)
 
         run_clip_fine_tuning(model, processor, device, cfg, parent_run=parent_run)
+    except KeyboardInterrupt:
+        interrupted = True
+        log.warning("Sweep trial interrupted by user")
+    finally:
+        if parent_run is not None:
+            if interrupted:
+                parent_run.summary["interrupted"] = 1
+            parent_run.finish(exit_code=130 if interrupted else 0)
+
+    if interrupted:
+        raise KeyboardInterrupt
 
 
 def create_clip_sweep(cfg: CLIPConfig) -> str:
@@ -755,19 +786,21 @@ def create_clip_sweep(cfg: CLIPConfig) -> str:
 
 
 def run_clip_sweep_agent(cfg: CLIPConfig) -> None:
-    """Run the W&B sweep agent. Requires cfg.sweep_id."""
     if not cfg.sweep_id:
         raise ValueError("sweep_id is required when sweep_action is 'agent'")
 
     def trial_fn():
         run_clip_sweep_trial(cfg)
 
-    wandb.agent(
-        sweep_id=cfg.sweep_id,
-        function=trial_fn,
-        count=cfg.sweep_count,
-        project=cfg.sweep_project,
-    )
+    try:
+        wandb.agent(
+            sweep_id=cfg.sweep_id,
+            function=trial_fn,
+            count=cfg.sweep_count,
+            project=cfg.sweep_project,
+        )
+    except KeyboardInterrupt:
+        log.warning("Sweep agent interrupted by user")
 
 
 def run_clip(cfg: CLIPConfig):
