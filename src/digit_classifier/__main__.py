@@ -29,6 +29,51 @@ from digit_classifier.foundation_models import (
 )
 
 
+def _build_foundation_model_config(
+    args: argparse.Namespace,
+    family: FoundationModelFamily,
+) -> FoundationModelConfig:
+    return FoundationModelConfig(
+        model=get_foundation_model(args.repo, family),
+        family=family,
+        zero_shot=getattr(args, "zero_shot", False),
+        device=args.device,
+        linear_probe=getattr(args, "linear_probe", False),
+        head_type=getattr(args, "head_type", "mlp"),
+        epochs=getattr(args, "epochs", 10),
+        early_stopping_patience=getattr(args, "early_stopping_patience", None),
+        early_stopping_min_delta=getattr(args, "early_stopping_min_delta", 0.0),
+        batch_size=getattr(args, "batch_size", 128),
+        feature_batch_size=getattr(args, "feature_batch_size", 32),
+        lr=getattr(args, "lr", 1e-3),
+        weight_decay=getattr(args, "weight_decay", 1e-4),
+        val_fraction=getattr(args, "val_fraction", 0.1),
+        deep_mlp=getattr(args, "deep_mlp", False),
+        dropout=getattr(args, "dropout", 0.2),
+        layer_norm=getattr(args, "layer_norm", False),
+        seed=getattr(args, "seed", 42),
+        n_folds=getattr(args, "n_folds", 5),
+        sweep_project=getattr(args, "sweep_project", "mnist-in-the-wild-clip"),
+        sweep_id=getattr(args, "sweep_id", None),
+        sweep_count=getattr(args, "sweep_count", None),
+        sweep_method=getattr(args, "sweep_method", "random"),
+        log_fold_runs=getattr(args, "log_fold_runs", True),
+        save_checkpoints=getattr(args, "save_checkpoints", False),
+        checkpoint_dir=getattr(args, "checkpoint_dir", "checkpoints"),
+        use_wandb=getattr(args, "use_wandb", True),
+    )
+
+
+def _resolve_foundation_model_family(repo: str) -> FoundationModelFamily:
+    for family in FoundationModelFamily:
+        try:
+            get_foundation_model(repo, family)
+            return family
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported foundation model repository: {repo}")
+
+
 # ---------------------------------------------------------------------------
 # Sub-command handlers
 # ---------------------------------------------------------------------------
@@ -333,35 +378,7 @@ def _handle_foundation_model(args: argparse.Namespace) -> None:
     )
 
     family = FoundationModelFamily(args.foundation_model_family)
-    cfg = FoundationModelConfig(
-        model=get_foundation_model(args.repo, family),
-        family=family,
-        zero_shot=getattr(args, "zero_shot", False),
-        device=args.device,
-        linear_probe=args.linear_probe,
-        head_type=args.head_type,
-        epochs=args.epochs,
-        early_stopping_patience=args.early_stopping_patience,
-        early_stopping_min_delta=args.early_stopping_min_delta,
-        batch_size=args.batch_size,
-        feature_batch_size=args.feature_batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        val_fraction=args.val_fraction,
-        deep_mlp=args.deep_mlp,
-        dropout=args.dropout,
-        layer_norm=args.layer_norm,
-        seed=args.seed,
-        n_folds=args.n_folds,
-        sweep_project=args.sweep_project,
-        sweep_id=args.sweep_id,
-        sweep_count=args.sweep_count,
-        sweep_method=args.sweep_method,
-        log_fold_runs=args.log_fold_runs,
-        save_checkpoints=args.save_checkpoints,
-        checkpoint_dir=args.checkpoint_dir,
-        use_wandb=args.use_wandb,
-    )
+    cfg = _build_foundation_model_config(args, family)
     sweep_action = getattr(args, "sweep_action", "none")
     if sweep_action == "create":
         create_foundation_model_sweep(cfg)
@@ -369,6 +386,29 @@ def _handle_foundation_model(args: argparse.Namespace) -> None:
         run_foundation_model_sweep_agent(cfg)
     else:
         run_foundation_model(cfg)
+
+
+def _handle_finetune(args: argparse.Namespace) -> None:
+    from digit_classifier.foundation_models import (
+        create_foundation_model_sweep,
+        run_foundation_model_sweep_agent,
+    )
+
+    family = _resolve_foundation_model_family(args.repo)
+    shortcut_args = argparse.Namespace(
+        repo=args.repo,
+        device=args.device,
+        sweep_project=args.project,
+        sweep_method="bayes",
+        n_folds=5,
+        epochs=250,
+        early_stopping_patience=10,
+        early_stopping_min_delta=0.0,
+        sweep_count=75,
+    )
+    cfg = _build_foundation_model_config(shortcut_args, family)
+    cfg.sweep_id = create_foundation_model_sweep(cfg)
+    run_foundation_model_sweep_agent(cfg)
 
 
 def _add_foundation_model_args(
@@ -807,6 +847,15 @@ def _build_parser() -> argparse.ArgumentParser:
         sweep_project_default="mnist-in-the-wild-dino",
     )
 
+    # --- finetune ---
+    finetune = sub.add_parser(
+        "finetune",
+        help="Create and run a fixed Bayes sweep for a CLIP or DINO foundation model",
+    )
+    finetune.add_argument("--repo", required=True, help="Foundation model repository to fine-tune")
+    finetune.add_argument("--project", required=True, help="W&B project name to use for the sweep")
+    finetune.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+
     return parser
 
 
@@ -838,6 +887,7 @@ def main() -> None:
         "visualize": _handle_visualize,
         "clip": _handle_foundation_model,
         "dino": _handle_foundation_model,
+        "finetune": _handle_finetune,
     }
     handlers[args.command](args)
 

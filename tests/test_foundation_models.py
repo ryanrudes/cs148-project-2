@@ -8,6 +8,7 @@ import torch
 
 import digit_classifier.evolve_prompt as evolve_prompt
 import digit_classifier.foundation_models as foundation_models
+import digit_classifier.__main__ as cli
 from digit_classifier.__main__ import _build_parser
 
 
@@ -52,6 +53,42 @@ def test_parser_clip_zero_shot_and_dino_args():
 
     with pytest.raises(SystemExit):
         parser.parse_args(["dino", "--zero-shot"])
+
+
+def test_parser_finetune_shortcut_args():
+    parser = _build_parser()
+
+    args = parser.parse_args(
+        [
+            "finetune",
+            "--repo",
+            "facebook/dinov3-vitb16-pretrain-lvd1689m",
+            "--project",
+            "mnist-shortcut",
+            "--device",
+            "cuda",
+        ]
+    )
+    assert args.command == "finetune"
+    assert args.repo == "facebook/dinov3-vitb16-pretrain-lvd1689m"
+    assert args.project == "mnist-shortcut"
+    assert args.device == "cuda"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["finetune", "--repo", "facebook/dinov3-vitb16-pretrain-lvd1689m"])
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "finetune",
+                "--repo",
+                "facebook/dinov3-vitb16-pretrain-lvd1689m",
+                "--project",
+                "mnist-shortcut",
+                "--epochs",
+                "250",
+            ]
+        )
 
 
 def test_foundation_model_lookup_and_metadata():
@@ -259,6 +296,61 @@ def test_run_foundation_model_dispatch(monkeypatch):
     )
     foundation_models.run_foundation_model(dino_cfg)
     assert calls == ["freeze", "fine_tune"]
+
+
+def test_handle_finetune_shortcut_resolves_family_and_runs_create_then_agent(monkeypatch):
+    created_cfgs = []
+    agent_cfgs = []
+
+    def fake_create(cfg):
+        created_cfgs.append(cfg)
+        return "sweep-123"
+
+    def fake_agent(cfg):
+        agent_cfgs.append(cfg)
+
+    monkeypatch.setattr(foundation_models, "create_foundation_model_sweep", fake_create)
+    monkeypatch.setattr(foundation_models, "run_foundation_model_sweep_agent", fake_agent)
+
+    dino_args = cli.argparse.Namespace(
+        repo="facebook/dinov2-base",
+        project="dino-project",
+        device="cpu",
+    )
+    cli._handle_finetune(dino_args)
+
+    assert len(created_cfgs) == 1
+    assert len(agent_cfgs) == 1
+    created = created_cfgs[0]
+    agent = agent_cfgs[0]
+    assert created.family == foundation_models.FoundationModelFamily.DINO
+    assert created.repo == "facebook/dinov2-base"
+    assert created.sweep_project == "dino-project"
+    assert created.sweep_method == "bayes"
+    assert created.n_folds == 5
+    assert created.epochs == 250
+    assert created.device == "cpu"
+    assert created.early_stopping_patience == 10
+    assert created.early_stopping_min_delta == 0.0
+    assert created.sweep_count == 75
+    assert created.sweep_id == "sweep-123"
+    assert agent is created
+
+    created_cfgs.clear()
+    agent_cfgs.clear()
+
+    clip_args = cli.argparse.Namespace(
+        repo="openai/clip-vit-base-patch16",
+        project="clip-project",
+        device="mps",
+    )
+    cli._handle_finetune(clip_args)
+
+    created = created_cfgs[0]
+    assert created.family == foundation_models.FoundationModelFamily.CLIP
+    assert created.repo == "openai/clip-vit-base-patch16"
+    assert created.sweep_project == "clip-project"
+    assert created.device == "mps"
 
 
 def test_evolve_prompt_main_builds_clip_config(monkeypatch):
