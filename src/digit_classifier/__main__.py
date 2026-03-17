@@ -336,6 +336,7 @@ def _handle_clip(args: argparse.Namespace) -> None:
         early_stopping_patience=args.early_stopping_patience,
         early_stopping_min_delta=args.early_stopping_min_delta,
         batch_size=args.batch_size,
+        feature_batch_size=args.feature_batch_size,
         lr=args.lr,
         weight_decay=args.weight_decay,
         val_fraction=args.val_fraction,
@@ -701,6 +702,7 @@ def _build_parser() -> argparse.ArgumentParser:
     clip.add_argument("--early-stopping-patience", type=int, default=None, help="Stop training if validation accuracy does not improve for this many epochs")
     clip.add_argument("--early-stopping-min-delta", type=float, default=0.0, help="Minimum validation accuracy improvement required to reset early stopping patience")
     clip.add_argument("--batch-size", type=int, default=128)
+    clip.add_argument("--feature-batch-size", type=int, default=32, help="Batch size for CLIP feature precomputation")
     clip.add_argument("--lr", type=float, default=1e-3)
     clip.add_argument("--weight-decay", type=float, default=1e-4)
     clip.add_argument("--val-fraction", type=float, default=0.1)

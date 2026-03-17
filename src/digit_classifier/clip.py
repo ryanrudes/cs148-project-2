@@ -106,6 +106,7 @@ class CLIPConfig:
     early_stopping_patience: int | None = None
     early_stopping_min_delta: float = 0.0
     batch_size: int = 128
+    feature_batch_size: int = 32
     lr: float = 1e-3
     weight_decay: float = 1e-4
     val_fraction: float = 0.1
@@ -202,26 +203,59 @@ def compute_features(model, processor, cfg, device):
         log.info(f"Preprocessing images")
         pil_images = [to_pil_image(image) for image in images]
 
-        image_inputs = processor(images=pil_images, return_tensors="pt")
-        log.info(f"Moving pixel values to {device}")
-        pixel_values = image_inputs["pixel_values"].to(device)
-        log.info(f"Computing image latents")
-        image_latents = model.vision_model(pixel_values=pixel_values).pooler_output
-        log.info(f"Computing image features")
-        image_features = model.visual_projection(image_latents)
-        log.info(f"Normalizing image features")
-        normalized_image_features = F.normalize(image_features, dim=-1)
+        feature_batch_size = max(1, cfg.feature_batch_size)
+        image_latents_chunks = []
+        image_features_chunks = []
+        normalized_image_features_chunks = []
+
+        log.info(f"Computing image features in batches of {feature_batch_size}")
+        with torch.inference_mode():
+            for start in track(
+                range(0, len(pil_images), feature_batch_size),
+                description="Encoding CLIP image features",
+            ):
+                end = min(start + feature_batch_size, len(pil_images))
+                batch_images = pil_images[start:end]
+
+                image_inputs = processor(images=batch_images, return_tensors="pt")
+                pixel_values = image_inputs["pixel_values"].to(device)
+
+                batch_image_latents = model.vision_model(pixel_values=pixel_values).pooler_output
+                batch_image_features = model.visual_projection(batch_image_latents)
+                batch_normalized_image_features = F.normalize(batch_image_features, dim=-1)
+
+                image_latents_chunks.append(batch_image_latents.cpu())
+                image_features_chunks.append(batch_image_features.cpu())
+                normalized_image_features_chunks.append(batch_normalized_image_features.cpu())
+
+                del image_inputs
+                del pixel_values
+                del batch_image_latents
+                del batch_image_features
+                del batch_normalized_image_features
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+
+        image_latents = torch.cat(image_latents_chunks, dim=0)
+        image_features = torch.cat(image_features_chunks, dim=0)
+        normalized_image_features = torch.cat(normalized_image_features_chunks, dim=0)
+        labels = torch.as_tensor(labels, dtype=torch.long)
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         log.info(f"Saving cached image features to {cache_path}")
         np.savez(
             cache_path,
-            image_latents=image_latents.cpu().numpy(),
-            image_features=image_features.cpu().numpy(),
-            normalized_image_features=normalized_image_features.cpu().numpy(),
-            labels=labels,
+            image_latents=image_latents.numpy(),
+            image_features=image_features.numpy(),
+            normalized_image_features=normalized_image_features.numpy(),
+            labels=labels.numpy(),
         )
+
+        image_latents = image_latents.to(device)
+        image_features = image_features.to(device)
+        normalized_image_features = normalized_image_features.to(device)
+        labels = labels.to(device)
 
     return image_latents, image_features, normalized_image_features, labels
 
@@ -564,6 +598,7 @@ def run_clip_fine_tuning(
         early_stopping_patience=cfg.early_stopping_patience,
         early_stopping_min_delta=cfg.early_stopping_min_delta,
         batch_size=cfg.batch_size,
+        feature_batch_size=cfg.feature_batch_size,
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
         val_fraction=cfg.val_fraction,
