@@ -37,7 +37,7 @@ def test_parser_clip_zero_shot_and_dino_args():
         [
             "dino",
             "--repo",
-            "facebook/dinov2-with-registers-large",
+            "facebook/dino-vitb16",
             "--sweep-action",
             "create",
             "--sweep-count",
@@ -100,7 +100,7 @@ def test_foundation_model_lookup_and_metadata():
     )
 
     assert len(clip_repos) == 4
-    assert len(dino_repos) == 18
+    assert len(dino_repos) == 22
 
     convnext_variants = []
     for architecture in foundation_models.FoundationModelArchitecture:
@@ -120,6 +120,11 @@ def test_foundation_model_lookup_and_metadata():
 
     assert convnext_variants
     assert all(architecture.value.patch_size is None for architecture in convnext_variants)
+    assert foundation_models.FoundationModelArchitecture.DINO_V1_VIT_B8.value.patch_size == 8
+    assert (
+        foundation_models.FoundationModelArchitecture.DINO_V1_VIT_S16.value.repo
+        == "facebook/dino-vits16"
+    )
     assert foundation_models.FoundationModelArchitecture.DINO_V2_GIANT.value.patch_size == 14
     assert (
         foundation_models.FoundationModelArchitecture.DINO_V2_REG_GIANT.value.repo
@@ -313,7 +318,7 @@ def test_handle_finetune_shortcut_resolves_family_and_runs_create_then_agent(mon
     monkeypatch.setattr(foundation_models, "run_foundation_model_sweep_agent", fake_agent)
 
     dino_args = cli.argparse.Namespace(
-        repo="facebook/dinov2-base",
+        repo="facebook/dino-vitb16",
         project="dino-project",
         device="cpu",
     )
@@ -324,7 +329,7 @@ def test_handle_finetune_shortcut_resolves_family_and_runs_create_then_agent(mon
     created = created_cfgs[0]
     agent = agent_cfgs[0]
     assert created.family == foundation_models.FoundationModelFamily.DINO
-    assert created.repo == "facebook/dinov2-base"
+    assert created.repo == "facebook/dino-vitb16"
     assert created.sweep_project == "dino-project"
     assert created.sweep_method == "bayes"
     assert created.n_folds == 5

@@ -143,6 +143,38 @@ class FoundationModelArchitecture(Enum):
         "openai/clip-vit-large-patch14-336",
         True,
     )
+    DINO_V1_VIT_S8 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.SMALL,
+        224,
+        8,
+        "facebook/dino-vits8",
+        False,
+    )
+    DINO_V1_VIT_S16 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.SMALL,
+        224,
+        16,
+        "facebook/dino-vits16",
+        False,
+    )
+    DINO_V1_VIT_B8 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.BASE,
+        224,
+        8,
+        "facebook/dino-vitb8",
+        False,
+    )
+    DINO_V1_VIT_B16 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.BASE,
+        224,
+        16,
+        "facebook/dino-vitb16",
+        False,
+    )
     DINO_V2_SMALL = FoundationModelArchitectureMetadata(
         FoundationModelFamily.DINO,
         FoundationModelSize.SMALL,
