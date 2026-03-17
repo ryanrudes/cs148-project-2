@@ -22,7 +22,6 @@ from multiprocessing import cpu_count, freeze_support
 import numpy as np
 import torch
 import torch.nn as nn
-import wandb
 from rich.console import Console
 from rich.pretty import pretty_repr
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
@@ -48,6 +47,17 @@ from digit_classifier.model import ResNeXt
 from digit_classifier.vit import build_deit3
 from digit_classifier.sampler import RatioBatchSampler, RepeatAugRatioBatchSampler, RepeatAugSampler
 from digit_classifier.splitting import split_dataset, split_dataset_external_only
+
+try:
+    import wandb
+except Exception as exc:  # pragma: no cover - depends on local wandb install state
+    _WANDB_IMPORT_ERROR = exc
+
+    class _WandbImportStub:
+        def __getattr__(self, name):
+            raise ImportError("wandb is unavailable in this environment") from _WANDB_IMPORT_ERROR
+
+    wandb = _WandbImportStub()
 
 console = Console()
 

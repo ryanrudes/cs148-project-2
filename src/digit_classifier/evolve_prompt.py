@@ -16,11 +16,12 @@ from rich.panel import Panel
 from rich.table import Table
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from digit_classifier.clip import (
-    CLIPConfig,
-    compute_features,
-    get_clip_model,
-    load_clip,
+from digit_classifier.foundation_models import (
+    FoundationModelConfig,
+    FoundationModelFamily,
+    compute_foundation_model_features,
+    get_foundation_model,
+    load_foundation_model,
 )
 
 logging.basicConfig(
@@ -1766,7 +1767,7 @@ def resolve_phase_configs(cfg: EvolutionConfig) -> tuple[EvolutionConfig, Evolut
     return phase1_cfg, phase2_cfg
 
 
-def evolve_prompts(cfg: EvolutionConfig, clip_cfg: CLIPConfig) -> None:
+def evolve_prompts(cfg: EvolutionConfig, clip_cfg: FoundationModelConfig) -> None:
     rng = random.Random(cfg.random_seed)
     device = get_best_device(cfg.use_mps)
     phase1_cfg, phase2_cfg = resolve_phase_configs(cfg)
@@ -1780,7 +1781,7 @@ def evolve_prompts(cfg: EvolutionConfig, clip_cfg: CLIPConfig) -> None:
         top_p=cfg.top_p,
     )
 
-    model, processor = load_clip(clip_cfg.model)
+    model, processor = load_foundation_model(clip_cfg.model)
     model_move_dtype = get_model_move_dtype(device)
     if model_move_dtype is None:
         model.to(device)
@@ -1792,7 +1793,12 @@ def evolve_prompts(cfg: EvolutionConfig, clip_cfg: CLIPConfig) -> None:
 
     console.print("[dim]Computing image features (may load from cache)...[/dim]")
     with torch.inference_mode():
-        _, _, normalized_image_features, labels = compute_features(model, processor, clip_cfg, device)
+        _, _, normalized_image_features, labels = compute_foundation_model_features(
+            model,
+            processor,
+            clip_cfg,
+            device,
+        )
     console.print("[green]✓[/green] Image features ready.")
 
     output_dir = Path(cfg.cache_dir)
@@ -2048,8 +2054,8 @@ def validate_evolution_config(cfg: EvolutionConfig) -> None:
 
 def main() -> None:
     args = parse_args()
-    clip_architecture = get_clip_model(args.clip_repo)
-    clip_cfg = CLIPConfig(model=clip_architecture)
+    clip_architecture = get_foundation_model(args.clip_repo, FoundationModelFamily.CLIP)
+    clip_cfg = FoundationModelConfig(model=clip_architecture, family=FoundationModelFamily.CLIP)
     evolution_cfg = EvolutionConfig(
         llm_model=args.llm_model,
         population_size=args.population_size,

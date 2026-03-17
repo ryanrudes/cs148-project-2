@@ -20,7 +20,13 @@ import sys
 from multiprocessing import freeze_support
 
 from digit_classifier.config import AugmentConfig, Config, DataConfig, ModelConfig, TrainingConfig
-from digit_classifier.clip import CLIPConfig
+from digit_classifier.foundation_models import (
+    DEFAULT_MODELS,
+    FoundationModelConfig,
+    FoundationModelFamily,
+    get_foundation_model,
+    list_foundation_model_repos,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -319,16 +325,18 @@ def _handle_visualize(args: argparse.Namespace) -> None:
     visualize_batches(cfg, num_batches=args.num_batches)
 
 
-def _handle_clip(args: argparse.Namespace) -> None:
-    from digit_classifier.clip import (
-        run_clip,
-        get_clip_model,
-        create_clip_sweep,
-        run_clip_sweep_agent,
+def _handle_foundation_model(args: argparse.Namespace) -> None:
+    from digit_classifier.foundation_models import (
+        create_foundation_model_sweep,
+        run_foundation_model,
+        run_foundation_model_sweep_agent,
     )
-    cfg = CLIPConfig(
-        model=get_clip_model(args.repo),
-        zero_shot=args.zero_shot,
+
+    family = FoundationModelFamily(args.foundation_model_family)
+    cfg = FoundationModelConfig(
+        model=get_foundation_model(args.repo, family),
+        family=family,
+        zero_shot=getattr(args, "zero_shot", False),
         device=args.device,
         linear_probe=args.linear_probe,
         head_type=args.head_type,
@@ -356,11 +364,122 @@ def _handle_clip(args: argparse.Namespace) -> None:
     )
     sweep_action = getattr(args, "sweep_action", "none")
     if sweep_action == "create":
-        create_clip_sweep(cfg)
+        create_foundation_model_sweep(cfg)
     elif sweep_action == "agent":
-        run_clip_sweep_agent(cfg)
+        run_foundation_model_sweep_agent(cfg)
     else:
-        run_clip(cfg)
+        run_foundation_model(cfg)
+
+
+def _add_foundation_model_args(
+    parser: argparse.ArgumentParser,
+    family: FoundationModelFamily,
+    sweep_project_default: str,
+) -> None:
+    parser.add_argument(
+        "--repo",
+        type=str,
+        default=DEFAULT_MODELS[family].value.repo,
+        choices=list_foundation_model_repos(family),
+        help=f"{family.value.upper()} model repository to use",
+    )
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    if family == FoundationModelFamily.CLIP:
+        parser.add_argument(
+            "--zero-shot",
+            action="store_true",
+            help="Run zero-shot classification, instead of downstream finetuning",
+        )
+    parser.add_argument("--linear-probe", action="store_true", help="Run linear probe classification")
+    parser.add_argument(
+        "--head-type",
+        type=str,
+        default="mlp",
+        choices=["linear", "mlp", "deep_mlp"],
+        help="Classifier head type for downstream training",
+    )
+    parser.add_argument("--deep-mlp", action="store_true", help="Run deep MLP classification")
+    parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=None,
+        help="Stop training if validation accuracy does not improve for this many epochs",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.0,
+        help="Minimum validation accuracy improvement required to reset early stopping patience",
+    )
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument(
+        "--feature-batch-size",
+        type=int,
+        default=32,
+        help="Batch size for foundation-model feature precomputation",
+    )
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--val-fraction", type=float, default=0.1)
+    parser.add_argument("--layer-norm", action="store_true", help="Use layer normalization")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--n-folds", type=int, default=5)
+    parser.add_argument(
+        "--sweep-action",
+        type=str,
+        choices=["none", "create", "agent"],
+        default="none",
+        help="Sweep mode: none (normal run), create (create W&B sweep), agent (run sweep agent)",
+    )
+    parser.add_argument(
+        "--sweep-id",
+        type=str,
+        default=None,
+        help="W&B sweep ID (required for --sweep-action agent)",
+    )
+    parser.add_argument(
+        "--sweep-count",
+        type=int,
+        default=None,
+        help="Max trials for sweep agent (default: unlimited)",
+    )
+    parser.add_argument(
+        "--sweep-method",
+        type=str,
+        default="random",
+        choices=["grid", "random", "bayes"],
+        help="Sweep search method",
+    )
+    parser.add_argument(
+        "--sweep-project",
+        type=str,
+        default=sweep_project_default,
+        help="W&B project for sweeps",
+    )
+    parser.add_argument(
+        "--no-wandb",
+        dest="use_wandb",
+        action="store_false",
+        default=True,
+        help="Disable W&B logging for non-sweep runs",
+    )
+    parser.add_argument(
+        "--no-log-fold-runs",
+        dest="log_fold_runs",
+        action="store_false",
+        default=True,
+        help="Disable logging each fold as separate wandb run",
+    )
+    parser.add_argument("--save-checkpoints", action="store_true", help="Save model checkpoints")
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default="checkpoints",
+        help="Directory for saved checkpoints",
+    )
+    parser.set_defaults(foundation_model_family=family.value)
 
 # ---------------------------------------------------------------------------
 # Argument parser
@@ -674,56 +793,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # --- CLIP ---
     clip = sub.add_parser("clip", help="Run MNIST-in-the-wild experiments with CLIP")
-    clip.add_argument(
-        "--repo",
-        type=str,
-        default="openai/clip-vit-base-patch32",
-        choices=[
-            "openai/clip-vit-base-patch32",
-            "openai/clip-vit-base-patch16",
-            "openai/clip-vit-large-patch14",
-            "openai/clip-vit-large-patch14-336",
-        ],
-        help="CLIP model repository to use",
+    _add_foundation_model_args(
+        clip,
+        family=FoundationModelFamily.CLIP,
+        sweep_project_default="mnist-in-the-wild-clip",
     )
-    clip.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
-    clip.add_argument("--zero-shot", action="store_true", help="Run zero-shot classification, instead of downstream finetuning")
-    clip.add_argument("--linear-probe", action="store_true", help="Run linear probe classification")
-    clip.add_argument(
-        "--head-type",
-        type=str,
-        default="mlp",
-        choices=["linear", "mlp", "deep_mlp"],
-        help="Classifier head type for downstream training",
+
+    # --- DINOv3 ---
+    dino = sub.add_parser("dino", help="Run MNIST-in-the-wild experiments with DINOv3")
+    _add_foundation_model_args(
+        dino,
+        family=FoundationModelFamily.DINO,
+        sweep_project_default="mnist-in-the-wild-dino",
     )
-    clip.add_argument("--deep-mlp", action="store_true", help="Run deep MLP classification")
-    clip.add_argument("--dropout", type=float, default=0.2)
-    clip.add_argument("--epochs", type=int, default=10)
-    clip.add_argument("--early-stopping-patience", type=int, default=None, help="Stop training if validation accuracy does not improve for this many epochs")
-    clip.add_argument("--early-stopping-min-delta", type=float, default=0.0, help="Minimum validation accuracy improvement required to reset early stopping patience")
-    clip.add_argument("--batch-size", type=int, default=128)
-    clip.add_argument("--feature-batch-size", type=int, default=32, help="Batch size for CLIP feature precomputation")
-    clip.add_argument("--lr", type=float, default=1e-3)
-    clip.add_argument("--weight-decay", type=float, default=1e-4)
-    clip.add_argument("--val-fraction", type=float, default=0.1)
-    clip.add_argument("--layer-norm", action="store_true", help="Use layer normalization")
-    clip.add_argument("--seed", type=int, default=42)
-    clip.add_argument("--n-folds", type=int, default=5)
-    clip.add_argument(
-        "--sweep-action",
-        type=str,
-        choices=["none", "create", "agent"],
-        default="none",
-        help="Sweep mode: none (normal run), create (create W&B sweep), agent (run sweep agent)",
-    )
-    clip.add_argument("--sweep-id", type=str, default=None, help="W&B sweep ID (required for --sweep-action agent)")
-    clip.add_argument("--sweep-count", type=int, default=None, help="Max trials for sweep agent (default: unlimited)")
-    clip.add_argument("--sweep-method", type=str, default="random", choices=["grid", "random", "bayes"], help="Sweep search method")
-    clip.add_argument("--sweep-project", type=str, default="mnist-in-the-wild-clip", help="W&B project for sweeps")
-    clip.add_argument("--no-wandb", dest="use_wandb", action="store_false", default=True, help="Disable W&B logging for non-sweep runs")
-    clip.add_argument("--no-log-fold-runs", dest="log_fold_runs", action="store_false", default=True, help="Disable logging each fold as separate wandb run")
-    clip.add_argument("--save-checkpoints", action="store_true", help="Save model checkpoints")
-    clip.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Directory for saved checkpoints")
 
     return parser
 
@@ -754,7 +836,8 @@ def main() -> None:
         "eval": _handle_eval,
         "generate-pareidolia": _handle_generate_pareidolia,
         "visualize": _handle_visualize,
-        "clip": _handle_clip,
+        "clip": _handle_foundation_model,
+        "dino": _handle_foundation_model,
     }
     handlers[args.command](args)
 

@@ -1,29 +1,44 @@
-from digit_classifier.mnist_in_the_wild import load_mnist_in_the_wild
+from __future__ import annotations
 
-from transformers import CLIPModel, CLIPProcessor
-from transformers.utils import logging as hf_logging
-
-from torch.utils.data import Dataset, DataLoader
-
-from dataclasses import dataclass
+import copy
+import logging
+import os
+import random
+import warnings
 from contextlib import contextmanager
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import logging
-import random
-import wandb
-import copy
-import os
-from sklearn.model_selection import StratifiedKFold
-
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
 from rich.logging import RichHandler
-from rich.progress import Progress, track
-
-# Silencing an annoying warning from rich about experimental features
-import warnings
+from rich.progress import track
+from sklearn.model_selection import StratifiedKFold
+from torch.utils.data import DataLoader, Dataset
+from torchvision.transforms.functional import to_pil_image
+from tqdm.rich import tqdm as rich_tqdm
 from tqdm.std import TqdmExperimentalWarning
+from transformers import AutoImageProcessor, AutoModel, CLIPModel, CLIPProcessor
+from transformers.utils import logging as hf_logging
+
+from digit_classifier.mnist_in_the_wild import load_mnist_in_the_wild
+
+try:
+    import wandb
+except Exception as exc:  # pragma: no cover - depends on local wandb install state
+    _WANDB_IMPORT_ERROR = exc
+
+    class _WandbImportStub:
+        def __getattr__(self, name):
+            raise ImportError("wandb is unavailable in this environment") from _WANDB_IMPORT_ERROR
+
+    wandb = _WandbImportStub()
 
 warnings.filterwarnings(
     "ignore",
@@ -31,22 +46,20 @@ warnings.filterwarnings(
     category=TqdmExperimentalWarning,
 )
 
-# For overriding huggingface progress bars
-from tqdm.rich import tqdm as rich_tqdm
-from huggingface_hub import snapshot_download
-from huggingface_hub.errors import LocalEntryNotFoundError
 
 class HFRichTqdm(rich_tqdm):
     def __init__(self, *args, **kwargs):
-        kwargs.pop("name", None)   # passed by huggingface_hub
+        kwargs.pop("name", None)
         super().__init__(*args, **kwargs)
+
 
 def download(repo_id: str, *args, **kwargs):
     try:
         return snapshot_download(repo_id, *args, **kwargs, local_files_only=True)
     except LocalEntryNotFoundError:
-        log.info(f"Downloaded CLIP assets from {repo_id}")
+        log.info(f"Downloaded model assets from {repo_id}")
         return snapshot_download(repo_id, *args, **kwargs, tqdm_class=HFRichTqdm)
+
 
 @contextmanager
 def quiet_transformers_loading():
@@ -59,45 +72,170 @@ def quiet_transformers_loading():
         hf_logging.set_verbosity(previous_verbosity)
         hf_logging.enable_progress_bar()
 
-import torch.nn as nn
-import torch.nn.functional as F
-import torch
-from torchvision.transforms.functional import to_pil_image
-
-import numpy as np
 
 logging.basicConfig(
     level=logging.WARNING,
     format="%(message)s",
     datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True)]
+    handlers=[RichHandler(rich_tracebacks=True)],
 )
 
-log = logging.getLogger("clip")
-log.setLevel(logging.INFO) 
+log = logging.getLogger("foundation_models")
+log.setLevel(logging.INFO)
 
-class ClipArchitectureSize(Enum):
+
+class FoundationModelFamily(Enum):
+    CLIP = "clip"
+    DINO = "dino"
+
+
+class FoundationModelSize(Enum):
+    TINY = "tiny"
+    SMALL = "small"
+    SMALL_PLUS = "small_plus"
     BASE = "base"
     LARGE = "large"
+    HUGE_PLUS = "huge_plus"
+    GIANT_7B = "giant_7b"
 
-@dataclass
-class CLIPArchitectureMetadata:
-    model_size: ClipArchitectureSize
+
+@dataclass(frozen=True)
+class FoundationModelArchitectureMetadata:
+    family: FoundationModelFamily
+    model_size: FoundationModelSize
     image_size: int
-    patch_size: int
+    patch_size: int | None
     repo: str
+    supports_zero_shot: bool
 
-class ClipArchitecture(Enum):
-    CLIP_VIT_BASE_PATCH32 = CLIPArchitectureMetadata(ClipArchitectureSize.BASE, 224, 32, "openai/clip-vit-base-patch32")
-    CLIP_VIT_BASE_PATCH16 = CLIPArchitectureMetadata(ClipArchitectureSize.BASE, 224, 16, "openai/clip-vit-base-patch16")
-    CLIP_VIT_LARGE_PATCH14 = CLIPArchitectureMetadata(ClipArchitectureSize.LARGE, 224, 14, "openai/clip-vit-large-patch14")
-    CLIP_VIT_LARGE_PATCH14_336 = CLIPArchitectureMetadata(ClipArchitectureSize.LARGE, 336, 14, "openai/clip-vit-large-patch14-336")
+
+class FoundationModelArchitecture(Enum):
+    CLIP_VIT_BASE_PATCH32 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.CLIP,
+        FoundationModelSize.BASE,
+        224,
+        32,
+        "openai/clip-vit-base-patch32",
+        True,
+    )
+    CLIP_VIT_BASE_PATCH16 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.CLIP,
+        FoundationModelSize.BASE,
+        224,
+        16,
+        "openai/clip-vit-base-patch16",
+        True,
+    )
+    CLIP_VIT_LARGE_PATCH14 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.CLIP,
+        FoundationModelSize.LARGE,
+        224,
+        14,
+        "openai/clip-vit-large-patch14",
+        True,
+    )
+    CLIP_VIT_LARGE_PATCH14_336 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.CLIP,
+        FoundationModelSize.LARGE,
+        336,
+        14,
+        "openai/clip-vit-large-patch14-336",
+        True,
+    )
+    DINO_V3_VIT_S16 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.SMALL,
+        224,
+        16,
+        "facebook/dinov3-vits16-pretrain-lvd1689m",
+        False,
+    )
+    DINO_V3_VIT_S16_PLUS = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.SMALL_PLUS,
+        224,
+        16,
+        "facebook/dinov3-vits16plus-pretrain-lvd1689m",
+        False,
+    )
+    DINO_V3_VIT_B16 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.BASE,
+        224,
+        16,
+        "facebook/dinov3-vitb16-pretrain-lvd1689m",
+        False,
+    )
+    DINO_V3_VIT_L16 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.LARGE,
+        224,
+        16,
+        "facebook/dinov3-vitl16-pretrain-lvd1689m",
+        False,
+    )
+    DINO_V3_VIT_H16_PLUS = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.HUGE_PLUS,
+        224,
+        16,
+        "facebook/dinov3-vith16plus-pretrain-lvd1689m",
+        False,
+    )
+    DINO_V3_VIT_7B16 = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.GIANT_7B,
+        224,
+        16,
+        "facebook/dinov3-vit7b16-pretrain-lvd1689m",
+        False,
+    )
+    DINO_V3_CONVNEXT_TINY = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.TINY,
+        224,
+        None,
+        "facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
+        False,
+    )
+    DINO_V3_CONVNEXT_SMALL = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.SMALL,
+        224,
+        None,
+        "facebook/dinov3-convnext-small-pretrain-lvd1689m",
+        False,
+    )
+    DINO_V3_CONVNEXT_BASE = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.BASE,
+        224,
+        None,
+        "facebook/dinov3-convnext-base-pretrain-lvd1689m",
+        False,
+    )
+    DINO_V3_CONVNEXT_LARGE = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.LARGE,
+        224,
+        None,
+        "facebook/dinov3-convnext-large-pretrain-lvd1689m",
+        False,
+    )
+
+
+DEFAULT_MODELS: dict[FoundationModelFamily, FoundationModelArchitecture] = {
+    FoundationModelFamily.CLIP: FoundationModelArchitecture.CLIP_VIT_BASE_PATCH32,
+    FoundationModelFamily.DINO: FoundationModelArchitecture.DINO_V3_VIT_B16,
+}
+
 
 @dataclass
-class CLIPConfig:
-    """Settings for CLIP experiments."""
+class FoundationModelConfig:
+    """Settings for CLIP and DINOv3 experiments."""
 
-    model: ClipArchitecture = ClipArchitecture.CLIP_VIT_BASE_PATCH32
+    model: FoundationModelArchitecture = FoundationModelArchitecture.CLIP_VIT_BASE_PATCH32
+    family: FoundationModelFamily | None = None
     zero_shot: bool = False
     device: str = "auto"
     linear_probe: bool = False
@@ -119,64 +257,100 @@ class CLIPConfig:
     save_checkpoints: bool = False
     checkpoint_dir: str = "checkpoints"
     use_wandb: bool = True
-
-    # W&B sweep API (used when sweep_action is create or agent)
     sweep_project: str = "mnist-in-the-wild-clip"
     sweep_id: str | None = None
     sweep_count: int | None = None
     sweep_method: str = "random"
 
+    def __post_init__(self) -> None:
+        model_family = self.model.value.family
+        if self.family is None:
+            self.family = model_family
+        elif self.family != model_family:
+            raise ValueError(
+                f"Config family {self.family.value} does not match model family {model_family.value}"
+            )
+        if self.zero_shot and not self.supports_zero_shot:
+            raise ValueError(f"Zero-shot is not supported for {self.family.value} models")
+
     @property
-    def model_size(self) -> ClipArchitectureSize:
+    def model_size(self) -> FoundationModelSize:
         return self.model.value.model_size
-    
+
     @property
     def image_size(self) -> int:
         return self.model.value.image_size
-    
+
     @property
-    def patch_size(self) -> int:
+    def patch_size(self) -> int | None:
         return self.model.value.patch_size
 
     @property
     def repo(self) -> str:
         return self.model.value.repo
 
-def get_clip_model(repo: str) -> ClipArchitecture:
-    match repo:
-        case "openai/clip-vit-base-patch32":
-            return ClipArchitecture.CLIP_VIT_BASE_PATCH32
-        case "openai/clip-vit-base-patch16":
-            return ClipArchitecture.CLIP_VIT_BASE_PATCH16
-        case "openai/clip-vit-large-patch14":
-            return ClipArchitecture.CLIP_VIT_LARGE_PATCH14
-        case "openai/clip-vit-large-patch14-336":
-            return ClipArchitecture.CLIP_VIT_LARGE_PATCH14_336
-        case _:
-            raise ValueError(f"Invalid CLIP model repository: {repo}")
+    @property
+    def supports_zero_shot(self) -> bool:
+        return self.model.value.supports_zero_shot
 
-def load_clip(model: ClipArchitecture):
+
+def list_foundation_model_repos(family: FoundationModelFamily | str) -> list[str]:
+    family = FoundationModelFamily(family)
+    return [
+        architecture.value.repo
+        for architecture in FoundationModelArchitecture
+        if architecture.value.family == family
+    ]
+
+
+def get_foundation_model(
+    repo: str,
+    family: FoundationModelFamily | str,
+) -> FoundationModelArchitecture:
+    family = FoundationModelFamily(family)
+    for architecture in FoundationModelArchitecture:
+        metadata = architecture.value
+        if metadata.repo == repo and metadata.family == family:
+            return architecture
+    raise ValueError(f"Invalid {family.value.upper()} model repository: {repo}")
+
+
+def load_foundation_model(model: FoundationModelArchitecture) -> tuple[Any, Any]:
     repo = model.value.repo
+    family = model.value.family
     local_dir = download(repo)
 
     with quiet_transformers_loading():
-        log.info(f"Loading CLIP model from {repo}")
-        clip_model = CLIPModel.from_pretrained(local_dir)
+        if family == FoundationModelFamily.CLIP:
+            log.info(f"Loading CLIP model from {repo}")
+            loaded_model = CLIPModel.from_pretrained(local_dir)
+            log.info(f"Loading CLIP processor from {repo}")
+            processor = CLIPProcessor.from_pretrained(local_dir, use_fast=False)
+        else:
+            log.info(f"Loading DINO model from {repo}")
+            loaded_model = AutoModel.from_pretrained(local_dir)
+            log.info(f"Loading DINO image processor from {repo}")
+            processor = AutoImageProcessor.from_pretrained(local_dir)
 
-        log.info(f"Loading CLIP processor from {repo}")
-        clip_processor = CLIPProcessor.from_pretrained(local_dir, use_fast=False)
+    return loaded_model, processor
 
-    return clip_model, clip_processor
 
 def freeze(model: nn.Module):
     for param in model.parameters():
         param.requires_grad = False
 
+
 def get_device(device: str) -> torch.device:
     if device == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    else:
-        return torch.device(device)
+        return torch.device(
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
+        )
+    return torch.device(device)
+
 
 def preview_images(images, labels):
     import cv2
@@ -186,9 +360,39 @@ def preview_images(images, labels):
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
-def compute_features(model, processor, cfg, device):
-    repo = cfg.repo.replace("/", "_")
-    cache_path = Path("cache") / f"clip_features_{repo}.npz"
+
+def _sanitize_repo(repo: str) -> str:
+    return repo.replace("/", "_")
+
+
+def _extract_image_features(
+    model: Any,
+    pixel_values: torch.Tensor,
+    family: FoundationModelFamily,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if family == FoundationModelFamily.CLIP:
+        image_latents = model.vision_model(pixel_values=pixel_values).pooler_output
+        image_features = model.visual_projection(image_latents)
+        normalized_image_features = F.normalize(image_features, dim=-1)
+        return image_latents, image_features, normalized_image_features
+
+    outputs = model(pixel_values=pixel_values)
+    image_latents = outputs.pooler_output
+    image_features = image_latents
+    normalized_image_features = F.normalize(image_features, dim=-1)
+    return image_latents, image_features, normalized_image_features
+
+
+def compute_foundation_model_features(
+    model: Any,
+    processor: Any,
+    cfg: FoundationModelConfig,
+    device: torch.device,
+):
+    cache_path = (
+        Path("cache")
+        / f"foundation_model_features_{cfg.family.value}_{_sanitize_repo(cfg.repo)}.npz"
+    )
 
     if cache_path.exists():
         log.info(f"Loading cached image features from {cache_path}")
@@ -197,83 +401,88 @@ def compute_features(model, processor, cfg, device):
         image_features = torch.from_numpy(data["image_features"]).to(device)
         normalized_image_features = torch.from_numpy(data["normalized_image_features"]).to(device)
         labels = torch.from_numpy(data["labels"]).to(device).long()
-    else:
-        log.info(f"Loading MNIST in the Wild dataset")
-        images, labels, mean, std = load_mnist_in_the_wild(cfg)
-        log.info(f"Preprocessing images")
-        pil_images = [to_pil_image(image) for image in images]
+        return image_latents, image_features, normalized_image_features, labels
 
-        feature_batch_size = max(1, cfg.feature_batch_size)
-        image_latents_chunks = []
-        image_features_chunks = []
-        normalized_image_features_chunks = []
+    log.info("Loading MNIST in the Wild dataset")
+    images, labels, _, _ = load_mnist_in_the_wild(cfg)
+    log.info("Preprocessing images")
+    pil_images = [to_pil_image(image) for image in images]
 
-        log.info(f"Computing image features in batches of {feature_batch_size}")
-        with torch.inference_mode():
-            for start in track(
-                range(0, len(pil_images), feature_batch_size),
-                description="Encoding CLIP image features",
-            ):
-                end = min(start + feature_batch_size, len(pil_images))
-                batch_images = pil_images[start:end]
+    feature_batch_size = max(1, cfg.feature_batch_size)
+    image_latents_chunks = []
+    image_features_chunks = []
+    normalized_image_features_chunks = []
 
-                image_inputs = processor(images=batch_images, return_tensors="pt")
-                pixel_values = image_inputs["pixel_values"].to(device)
+    log.info(f"Computing image features in batches of {feature_batch_size}")
+    with torch.inference_mode():
+        for start in track(
+            range(0, len(pil_images), feature_batch_size),
+            description=f"Encoding {cfg.family.value.upper()} image features",
+        ):
+            end = min(start + feature_batch_size, len(pil_images))
+            batch_images = pil_images[start:end]
 
-                batch_image_latents = model.vision_model(pixel_values=pixel_values).pooler_output
-                batch_image_features = model.visual_projection(batch_image_latents)
-                batch_normalized_image_features = F.normalize(batch_image_features, dim=-1)
+            image_inputs = processor(images=batch_images, return_tensors="pt")
+            pixel_values = image_inputs["pixel_values"].to(device)
 
-                image_latents_chunks.append(batch_image_latents.cpu())
-                image_features_chunks.append(batch_image_features.cpu())
-                normalized_image_features_chunks.append(batch_normalized_image_features.cpu())
+            batch_image_latents, batch_image_features, batch_normalized_image_features = (
+                _extract_image_features(model, pixel_values, cfg.family)
+            )
 
-                del image_inputs
-                del pixel_values
-                del batch_image_latents
-                del batch_image_features
-                del batch_normalized_image_features
-                if device.type == "cuda":
-                    torch.cuda.empty_cache()
+            image_latents_chunks.append(batch_image_latents.cpu())
+            image_features_chunks.append(batch_image_features.cpu())
+            normalized_image_features_chunks.append(batch_normalized_image_features.cpu())
 
-        image_latents = torch.cat(image_latents_chunks, dim=0)
-        image_features = torch.cat(image_features_chunks, dim=0)
-        normalized_image_features = torch.cat(normalized_image_features_chunks, dim=0)
-        labels = torch.as_tensor(labels, dtype=torch.long)
+            del image_inputs
+            del pixel_values
+            del batch_image_latents
+            del batch_image_features
+            del batch_normalized_image_features
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
 
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
+    image_latents = torch.cat(image_latents_chunks, dim=0)
+    image_features = torch.cat(image_features_chunks, dim=0)
+    normalized_image_features = torch.cat(normalized_image_features_chunks, dim=0)
+    labels = torch.as_tensor(labels, dtype=torch.long)
 
-        log.info(f"Saving cached image features to {cache_path}")
-        np.savez(
-            cache_path,
-            image_latents=image_latents.numpy(),
-            image_features=image_features.numpy(),
-            normalized_image_features=normalized_image_features.numpy(),
-            labels=labels.numpy(),
-        )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    log.info(f"Saving cached image features to {cache_path}")
+    np.savez(
+        cache_path,
+        image_latents=image_latents.numpy(),
+        image_features=image_features.numpy(),
+        normalized_image_features=normalized_image_features.numpy(),
+        labels=labels.numpy(),
+    )
 
-        image_latents = image_latents.to(device)
-        image_features = image_features.to(device)
-        normalized_image_features = normalized_image_features.to(device)
-        labels = labels.to(device)
+    return (
+        image_latents.to(device),
+        image_features.to(device),
+        normalized_image_features.to(device),
+        labels.to(device),
+    )
 
-    return image_latents, image_features, normalized_image_features, labels
 
-# Maybe sanity check this later against
-# inputs = processor(text=prompts, images=images, return_tensors="pt", padding=True)
-# outputs = model(**inputs)
-# logits = outputs.logits_per_image
-def run_clip_zero_shot(model: CLIPModel, processor: CLIPProcessor, device: torch.device, cfg: CLIPConfig):
-    # Get the total number of parameters in the model
+def run_clip_zero_shot(
+    model: CLIPModel,
+    processor: CLIPProcessor,
+    device: torch.device,
+    cfg: FoundationModelConfig,
+):
+    if not cfg.supports_zero_shot:
+        raise ValueError(f"Zero-shot is not supported for {cfg.family.value} models")
+
     total_params = sum(p.numel() for p in model.parameters())
     log.info(f"Total number of parameters in the model: {total_params}")
 
     logit_scale = model.logit_scale.exp()
-
     prompt_template = "an image of natural objects arranged to form the digit {digit}"
 
     with torch.inference_mode():
-        image_latents, image_features, normalized_image_features, labels = compute_features(model, processor, cfg, device)
+        _, _, normalized_image_features, labels = compute_foundation_model_features(
+            model, processor, cfg, device
+        )
         prompts = [prompt_template.format(digit=i) for i in range(10)]
 
         text_inputs = processor(text=prompts, return_tensors="pt", padding=True)
@@ -308,7 +517,8 @@ def run_clip_zero_shot(model: CLIPModel, processor: CLIPProcessor, device: torch
         if hasattr(result, "show"):
             result.show()
 
-class CLIPFineTuningDataset(Dataset):
+
+class FoundationModelFineTuningDataset(Dataset):
     def __init__(self, image_latents: torch.Tensor, labels: torch.Tensor):
         self.image_latents = image_latents
         self.labels = labels
@@ -318,6 +528,7 @@ class CLIPFineTuningDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.image_latents[idx], self.labels[idx]
+
 
 def seed_everything(seed: int):
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -330,7 +541,7 @@ def seed_everything(seed: int):
     torch.use_deterministic_algorithms(True)
 
 
-def build_classifier(cfg: CLIPConfig, input_dim: int) -> nn.Module:
+def build_classifier(cfg: FoundationModelConfig, input_dim: int) -> nn.Module:
     head_type = cfg.head_type
     if cfg.linear_probe:
         head_type = "linear"
@@ -347,14 +558,14 @@ def build_classifier(cfg: CLIPConfig, input_dim: int) -> nn.Module:
             nn.Linear(256, 128),
             nn.GELU(),
             nn.Dropout(cfg.dropout),
-            nn.Linear(128, 10)
+            nn.Linear(128, 10),
         ]
     elif head_type == "mlp":
         layers = [
             nn.Linear(input_dim, 256),
             nn.GELU(),
             nn.Dropout(cfg.dropout),
-            nn.Linear(256, 10)
+            nn.Linear(256, 10),
         ]
     else:
         raise ValueError(f"Invalid head_type: {head_type}")
@@ -365,20 +576,20 @@ def build_classifier(cfg: CLIPConfig, input_dim: int) -> nn.Module:
     return nn.Sequential(*layers)
 
 
-def train_clip_fold(
+def train_foundation_model_fold(
     fold: int,
     train_features: torch.Tensor,
     train_labels: torch.Tensor,
     val_features: torch.Tensor,
     val_labels: torch.Tensor,
     device: torch.device,
-    cfg: CLIPConfig,
+    cfg: FoundationModelConfig,
     wandb_config: dict,
     wandb_group: str,
     parent_run=None,
 ):
-    train_dataset = CLIPFineTuningDataset(train_features, train_labels)
-    val_dataset = CLIPFineTuningDataset(val_features, val_labels)
+    train_dataset = FoundationModelFineTuningDataset(train_features, train_labels)
+    val_dataset = FoundationModelFineTuningDataset(val_features, val_labels)
 
     train_generator = torch.Generator()
     train_generator.manual_seed(cfg.seed + fold)
@@ -399,7 +610,11 @@ def train_clip_fold(
 
     input_dim = train_features.shape[-1]
     classifier = build_classifier(cfg, input_dim).to(device)
-    optimizer = torch.optim.AdamW(classifier.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    optimizer = torch.optim.AdamW(
+        classifier.parameters(),
+        lr=cfg.lr,
+        weight_decay=cfg.weight_decay,
+    )
     criterion = nn.CrossEntropyLoss()
 
     run = None
@@ -444,7 +659,7 @@ def train_clip_fold(
                 loss = criterion(outputs, labels)
                 if not torch.isfinite(loss):
                     log.warning(
-                        f"Fold {fold}, Epoch {epoch+1}: non-finite training loss detected "
+                        f"Fold {fold}, Epoch {epoch + 1}: non-finite training loss detected "
                         f"(loss={loss.item()}, head_type={cfg.head_type}, layer_norm={cfg.layer_norm}, "
                         f"lr={cfg.lr}, batch_size={cfg.batch_size})"
                     )
@@ -488,7 +703,7 @@ def train_clip_fold(
                     loss = criterion(outputs, labels)
                     if not torch.isfinite(loss):
                         log.warning(
-                            f"Fold {fold}, Epoch {epoch+1}: non-finite validation loss detected "
+                            f"Fold {fold}, Epoch {epoch + 1}: non-finite validation loss detected "
                             f"(loss={loss.item()}, head_type={cfg.head_type}, layer_norm={cfg.layer_norm}, "
                             f"lr={cfg.lr}, batch_size={cfg.batch_size})"
                         )
@@ -510,8 +725,9 @@ def train_clip_fold(
 
             val_accuracy = num_val_correct / num_val_total
             log.info(
-                f"Fold {fold}, Epoch {epoch+1}, Loss: {mean_train_loss:.4f}, Val Loss: {mean_val_loss:.4f}, "
-                f"Train Acc: {train_accuracy:.4f}, Val Acc: {val_accuracy:.4f}"
+                f"Fold {fold}, Epoch {epoch + 1}, Loss: {mean_train_loss:.4f}, "
+                f"Val Loss: {mean_val_loss:.4f}, Train Acc: {train_accuracy:.4f}, "
+                f"Val Acc: {val_accuracy:.4f}"
             )
 
             improved = val_accuracy > (best_val_accuracy + cfg.early_stopping_min_delta)
@@ -540,9 +756,12 @@ def train_clip_fold(
             if run is not None:
                 run.log(epoch_metrics)
 
-            if cfg.early_stopping_patience is not None and epochs_since_improvement >= cfg.early_stopping_patience:
+            if (
+                cfg.early_stopping_patience is not None
+                and epochs_since_improvement >= cfg.early_stopping_patience
+            ):
                 log.info(
-                    f"Fold {fold}: early stopping at epoch {epoch+1} "
+                    f"Fold {fold}: early stopping at epoch {epoch + 1} "
                     f"(best val acc {best_val_accuracy:.4f} at epoch {best_epoch})"
                 )
                 if run is not None:
@@ -570,16 +789,19 @@ def train_clip_fold(
         "interrupted": interrupted,
     }
 
-def run_clip_fine_tuning(
-    model: CLIPModel,
-    processor: CLIPProcessor,
+
+def run_foundation_model_fine_tuning(
+    model: Any,
+    processor: Any,
     device: torch.device,
-    cfg: CLIPConfig,
+    cfg: FoundationModelConfig,
     parent_run=None,
 ):
     seed_everything(cfg.seed)
 
-    _, _, normalized_image_features, labels = compute_features(model, processor, cfg, device)
+    _, _, normalized_image_features, labels = compute_foundation_model_features(
+        model, processor, cfg, device
+    )
     features = normalized_image_features.detach().cpu()
     labels = labels.detach().cpu().long()
 
@@ -587,6 +809,7 @@ def run_clip_fine_tuning(
         raise ValueError(f"n_folds must be at least 2, got {cfg.n_folds}")
 
     wandb_config = dict(
+        family=cfg.family.value,
         model=cfg.model.value.repo,
         patch_size=cfg.model.value.patch_size,
         image_size=cfg.model.value.image_size,
@@ -617,7 +840,7 @@ def run_clip_fine_tuning(
         wandb_group = f"sweep-{parent_run.id}"
     else:
         wandb_group = (
-            f"cv-{cfg.model.value.repo.replace('/', '-')}-"
+            f"cv-{cfg.family.value}-{_sanitize_repo(cfg.model.value.repo)}-"
             f"linear{int(cfg.linear_probe)}-deep{int(cfg.deep_mlp)}-"
             f"ln{int(cfg.layer_norm)}-seed{cfg.seed}"
         )
@@ -637,7 +860,7 @@ def run_clip_fine_tuning(
         val_features = features[val_idx]
         val_labels = labels[val_idx]
 
-        result = train_clip_fold(
+        result = train_foundation_model_fold(
             fold=fold,
             train_features=train_features,
             train_labels=train_labels,
@@ -661,7 +884,10 @@ def run_clip_fine_tuning(
     if not fold_results:
         raise RuntimeError("No fold results were produced")
 
-    fold_accuracies = [result["best_val_acc"] if np.isfinite(result["best_val_acc"]) else 0.0 for result in fold_results]
+    fold_accuracies = [
+        result["best_val_acc"] if np.isfinite(result["best_val_acc"]) else 0.0
+        for result in fold_results
+    ]
     mean_accuracy = float(np.mean(fold_accuracies))
     std_accuracy = float(np.std(fold_accuracies))
 
@@ -672,7 +898,7 @@ def run_clip_fine_tuning(
         checkpoint_dir = Path(cfg.checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = checkpoint_dir / (
-            f"clip_{cfg.model.value.repo.replace('/', '-')}_"
+            f"{cfg.family.value}_{_sanitize_repo(cfg.model.value.repo)}_"
             f"seed{cfg.seed}_best_fold{best_overall['fold']}.pt"
         )
         torch.save(best_overall["checkpoint"], checkpoint_path)
@@ -690,14 +916,24 @@ def run_clip_fine_tuning(
         if parent_run is not None:
             parent_run.summary["cv/mean_best_val_acc"] = mean_accuracy
             parent_run.summary["cv/std_best_val_acc"] = std_accuracy
-            parent_run.summary["cv/best_fold"] = best_overall["fold"] if best_overall is not None else None
-            parent_run.summary["cv/best_fold_val_acc"] = best_overall["best_val_acc"] if best_overall is not None else None
-            parent_run.summary["cv/num_failed_folds"] = sum(int(result["failed_non_finite"]) for result in fold_results)
-            parent_run.summary["cv/interrupted"] = int(any(result["interrupted"] for result in fold_results))
+            parent_run.summary["cv/best_fold"] = best_overall["fold"] if best_overall else None
+            parent_run.summary["cv/best_fold_val_acc"] = (
+                best_overall["best_val_acc"] if best_overall else None
+            )
+            parent_run.summary["cv/num_failed_folds"] = sum(
+                int(result["failed_non_finite"]) for result in fold_results
+            )
+            parent_run.summary["cv/interrupted"] = int(
+                any(result["interrupted"] for result in fold_results)
+            )
             parent_run.log({"cv/folds": fold_table})
             for result in fold_results:
-                parent_run.summary[f"cv/fold_{result['fold']}_best_val_acc"] = result["best_val_acc"]
-                parent_run.summary[f"cv/fold_{result['fold']}_best_epoch"] = result["best_epoch"]
+                parent_run.summary[f"cv/fold_{result['fold']}_best_val_acc"] = result[
+                    "best_val_acc"
+                ]
+                parent_run.summary[f"cv/fold_{result['fold']}_best_epoch"] = result[
+                    "best_epoch"
+                ]
         else:
             aggregate_run = wandb.init(
                 project=cfg.sweep_project,
@@ -710,10 +946,16 @@ def run_clip_fine_tuning(
 
             aggregate_run.summary["cv/mean_best_val_acc"] = mean_accuracy
             aggregate_run.summary["cv/std_best_val_acc"] = std_accuracy
-            aggregate_run.summary["cv/best_fold"] = best_overall["fold"] if best_overall is not None else None
-            aggregate_run.summary["cv/best_fold_val_acc"] = best_overall["best_val_acc"] if best_overall is not None else None
-            aggregate_run.summary["cv/num_failed_folds"] = sum(int(result["failed_non_finite"]) for result in fold_results)
-            aggregate_run.summary["cv/interrupted"] = int(any(result["interrupted"] for result in fold_results))
+            aggregate_run.summary["cv/best_fold"] = best_overall["fold"] if best_overall else None
+            aggregate_run.summary["cv/best_fold_val_acc"] = (
+                best_overall["best_val_acc"] if best_overall else None
+            )
+            aggregate_run.summary["cv/num_failed_folds"] = sum(
+                int(result["failed_non_finite"]) for result in fold_results
+            )
+            aggregate_run.summary["cv/interrupted"] = int(
+                any(result["interrupted"] for result in fold_results)
+            )
             aggregate_run.log({"cv/folds": fold_table})
             aggregate_run.finish()
 
@@ -725,8 +967,9 @@ def run_clip_fine_tuning(
         "saved_checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
     }
 
-def build_clip_sweep_config(cfg: CLIPConfig) -> dict:
-    """Build a valid W&B sweep config dict for CLIP hyperparameter search."""
+
+def build_foundation_model_sweep_config(cfg: FoundationModelConfig) -> dict:
+    """Build a valid W&B sweep config dict for foundation-model hyperparameter search."""
     if cfg.sweep_method == "grid":
         parameters = {
             "lr": {"values": [1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2]},
@@ -745,15 +988,14 @@ def build_clip_sweep_config(cfg: CLIPConfig) -> dict:
             "layer_norm": {"values": [True, False]},
             "batch_size": {"values": [64, 128, 256]},
         }
-    sweep_config = {
+    return {
         "method": cfg.sweep_method,
         "metric": {"name": "cv/mean_best_val_acc", "goal": "maximize"},
         "parameters": parameters,
     }
-    return sweep_config
 
 
-def run_clip_sweep_trial(base_cfg: CLIPConfig):
+def run_foundation_model_sweep_trial(base_cfg: FoundationModelConfig):
     parent_run = None
     interrupted = False
     try:
@@ -791,13 +1033,13 @@ def run_clip_sweep_trial(base_cfg: CLIPConfig):
         )
 
         seed_everything(cfg.seed)
-        model, processor = load_clip(cfg.model)
+        model, processor = load_foundation_model(cfg.model)
         device = get_device(cfg.device)
         model = model.to(device)
         model.eval()
         freeze(model)
 
-        run_clip_fine_tuning(model, processor, device, cfg, parent_run=parent_run)
+        run_foundation_model_fine_tuning(model, processor, device, cfg, parent_run=parent_run)
     except KeyboardInterrupt:
         interrupted = True
         log.warning("Sweep trial interrupted by user")
@@ -811,21 +1053,20 @@ def run_clip_sweep_trial(base_cfg: CLIPConfig):
         raise KeyboardInterrupt
 
 
-def create_clip_sweep(cfg: CLIPConfig) -> str:
-    """Create a W&B sweep and return its ID."""
-    sweep_config = build_clip_sweep_config(cfg)
+def create_foundation_model_sweep(cfg: FoundationModelConfig) -> str:
+    sweep_config = build_foundation_model_sweep_config(cfg)
     sweep_id = wandb.sweep(sweep=sweep_config, project=cfg.sweep_project)
     log.info(f"Created sweep: {sweep_id}")
     print(f"Sweep ID: {sweep_id}")
     return sweep_id
 
 
-def run_clip_sweep_agent(cfg: CLIPConfig) -> None:
+def run_foundation_model_sweep_agent(cfg: FoundationModelConfig) -> None:
     if not cfg.sweep_id:
         raise ValueError("sweep_id is required when sweep_action is 'agent'")
 
     def trial_fn():
-        run_clip_sweep_trial(cfg)
+        run_foundation_model_sweep_trial(cfg)
 
     try:
         wandb.agent(
@@ -838,20 +1079,20 @@ def run_clip_sweep_agent(cfg: CLIPConfig) -> None:
         log.warning("Sweep agent interrupted by user")
 
 
-def run_clip(cfg: CLIPConfig):
+def run_foundation_model(cfg: FoundationModelConfig):
     seed_everything(cfg.seed)
 
     cfg.linear_probe = cfg.head_type == "linear"
     cfg.deep_mlp = cfg.head_type == "deep_mlp"
 
-    model, processor = load_clip(cfg.model)
+    model, processor = load_foundation_model(cfg.model)
     device = get_device(cfg.device)
     model = model.to(device)
     model.eval()
 
     freeze(model)
 
-    if cfg.zero_shot:
+    if cfg.family == FoundationModelFamily.CLIP and cfg.zero_shot:
         run_clip_zero_shot(model, processor, device, cfg)
     else:
-        run_clip_fine_tuning(model, processor, device, cfg)
+        run_foundation_model_fine_tuning(model, processor, device, cfg)

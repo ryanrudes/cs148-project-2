@@ -1,9 +1,8 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from digit_classifier.clip import CLIPConfig
-    from transformers import CLIPProcessor
+    from digit_classifier.foundation_models import FoundationModelConfig
 
 from pathlib import Path
 
@@ -16,7 +15,7 @@ import logging
 log = logging.getLogger(__name__)
 
 def load_mnist_in_the_wild(
-    cfg: CLIPConfig,
+    cfg: FoundationModelConfig,
     cache_dir: str = "datasets",
 ):
     log.info(f"Loading MNIST in the Wild dataset")
@@ -37,7 +36,7 @@ def load_mnist_in_the_wild(
     return images, labels, mean, std
 
 class MNISTInTheWild(Dataset):
-    def __init__(self, cfg: CLIPConfig, processor: CLIPProcessor, cache_dir: str = "datasets"):
+    def __init__(self, cfg: FoundationModelConfig, processor: Any, cache_dir: str = "datasets"):
         self.images, self.labels, self.mean, self.std = load_mnist_in_the_wild(cfg, cache_dir)
         self.processor = processor
 
