@@ -95,6 +95,7 @@ class FoundationModelSize(Enum):
     SMALL_PLUS = "small_plus"
     BASE = "base"
     LARGE = "large"
+    GIANT = "giant"
     HUGE_PLUS = "huge_plus"
     GIANT_7B = "giant_7b"
 
@@ -141,6 +142,70 @@ class FoundationModelArchitecture(Enum):
         14,
         "openai/clip-vit-large-patch14-336",
         True,
+    )
+    DINO_V2_SMALL = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.SMALL,
+        224,
+        14,
+        "facebook/dinov2-small",
+        False,
+    )
+    DINO_V2_BASE = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.BASE,
+        224,
+        14,
+        "facebook/dinov2-base",
+        False,
+    )
+    DINO_V2_LARGE = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.LARGE,
+        224,
+        14,
+        "facebook/dinov2-large",
+        False,
+    )
+    DINO_V2_GIANT = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.GIANT,
+        224,
+        14,
+        "facebook/dinov2-giant",
+        False,
+    )
+    DINO_V2_REG_SMALL = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.SMALL,
+        224,
+        14,
+        "facebook/dinov2-with-registers-small",
+        False,
+    )
+    DINO_V2_REG_BASE = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.BASE,
+        224,
+        14,
+        "facebook/dinov2-with-registers-base",
+        False,
+    )
+    DINO_V2_REG_LARGE = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.LARGE,
+        224,
+        14,
+        "facebook/dinov2-with-registers-large",
+        False,
+    )
+    DINO_V2_REG_GIANT = FoundationModelArchitectureMetadata(
+        FoundationModelFamily.DINO,
+        FoundationModelSize.GIANT,
+        224,
+        14,
+        "facebook/dinov2-with-registers-giant",
+        False,
     )
     DINO_V3_VIT_S16 = FoundationModelArchitectureMetadata(
         FoundationModelFamily.DINO,
@@ -232,7 +297,7 @@ DEFAULT_MODELS: dict[FoundationModelFamily, FoundationModelArchitecture] = {
 
 @dataclass
 class FoundationModelConfig:
-    """Settings for CLIP and DINOv3 experiments."""
+    """Settings for CLIP and DINO experiments."""
 
     model: FoundationModelArchitecture = FoundationModelArchitecture.CLIP_VIT_BASE_PATCH32
     family: FoundationModelFamily | None = None

@@ -799,8 +799,8 @@ def _build_parser() -> argparse.ArgumentParser:
         sweep_project_default="mnist-in-the-wild-clip",
     )
 
-    # --- DINOv3 ---
-    dino = sub.add_parser("dino", help="Run MNIST-in-the-wild experiments with DINOv3")
+    # --- DINO ---
+    dino = sub.add_parser("dino", help="Run MNIST-in-the-wild experiments with DINO checkpoints")
     _add_foundation_model_args(
         dino,
         family=FoundationModelFamily.DINO,

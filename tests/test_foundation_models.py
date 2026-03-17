@@ -36,7 +36,7 @@ def test_parser_clip_zero_shot_and_dino_args():
         [
             "dino",
             "--repo",
-            "facebook/dinov3-convnext-large-pretrain-lvd1689m",
+            "facebook/dinov2-with-registers-large",
             "--sweep-action",
             "create",
             "--sweep-count",
@@ -63,7 +63,7 @@ def test_foundation_model_lookup_and_metadata():
     )
 
     assert len(clip_repos) == 4
-    assert len(dino_repos) == 10
+    assert len(dino_repos) == 18
 
     convnext_variants = []
     for architecture in foundation_models.FoundationModelArchitecture:
@@ -83,6 +83,11 @@ def test_foundation_model_lookup_and_metadata():
 
     assert convnext_variants
     assert all(architecture.value.patch_size is None for architecture in convnext_variants)
+    assert foundation_models.FoundationModelArchitecture.DINO_V2_GIANT.value.patch_size == 14
+    assert (
+        foundation_models.FoundationModelArchitecture.DINO_V2_REG_GIANT.value.repo
+        == "facebook/dinov2-with-registers-giant"
+    )
 
     with pytest.raises(ValueError):
         foundation_models.FoundationModelConfig(
