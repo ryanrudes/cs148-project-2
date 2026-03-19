@@ -170,9 +170,9 @@ def load_qwen_vl_model(
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         repo,
-        torch_dtype=_get_qwen_torch_dtype(resolved_device),
+        dtype=_get_qwen_torch_dtype(resolved_device),
     )
-    processor = AutoProcessor.from_pretrained(repo)
+    processor = AutoProcessor.from_pretrained(repo, use_fast=False)
     tokenizer = getattr(processor, "tokenizer", None)
     if tokenizer is not None:
         if tokenizer.pad_token is None and tokenizer.eos_token is not None:
@@ -320,9 +320,16 @@ def build_qwen_conversation_with_system_prompt(
     *,
     instruction_body: str,
     system_prompt: str | None = QWEN_SYSTEM_PROMPT,
+    image: Image.Image | str | None = None,
 ) -> list[dict[str, Any]]:
     normalized_instruction = instruction_body.strip()
     normalized_system_prompt = resolve_qwen_system_prompt(system_prompt)
+    user_content: list[dict[str, Any]]
+    if image is None:
+        user_content = [{"type": "image"}]
+    else:
+        user_content = [{"type": "image", "image": image}]
+    user_content.append({"type": "text", "text": normalized_instruction})
     return [
         {
             "role": "system",
@@ -330,10 +337,7 @@ def build_qwen_conversation_with_system_prompt(
         },
         {
             "role": "user",
-            "content": [
-                {"type": "image"},
-                {"type": "text", "text": normalized_instruction},
-            ],
+            "content": user_content,
         },
     ]
 
@@ -345,22 +349,38 @@ def _prepare_qwen_inputs(
     *,
     system_prompt: str | None = QWEN_SYSTEM_PROMPT,
 ) -> dict[str, Any]:
-    chat_text = processor.apply_chat_template(
+    conversations = [
         build_qwen_conversation_with_system_prompt(
             instruction_body=instruction_body,
             system_prompt=system_prompt,
-        ),
-        tokenize=False,
+            image=image,
+        )
+        for image in images
+    ]
+    inputs = processor.apply_chat_template(
+        conversations,
+        tokenize=True,
         add_generation_prompt=True,
-    )
-    batch_text = [chat_text] * len(images)
-    inputs = processor(
-        text=batch_text,
-        images=list(images),
-        padding=True,
+        return_dict=True,
         return_tensors="pt",
+        padding=True,
     )
     return dict(inputs)
+
+
+def _decode_qwen_outputs(
+    *,
+    processor: Any,
+    inputs: dict[str, Any],
+    outputs: torch.Tensor,
+) -> list[str]:
+    prompt_length = inputs["input_ids"].shape[1]
+    generated_ids = outputs[:, prompt_length:]
+    return processor.batch_decode(
+        generated_ids,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )
 
 
 def _create_qwen_eval_progress(*, disable: bool = False) -> Progress:
@@ -388,6 +408,9 @@ def generate_qwen_responses(
     system_prompt: str | None = QWEN_SYSTEM_PROMPT,
     max_new_tokens: int = DEFAULT_QWEN_MAX_NEW_TOKENS,
 ) -> list[str]:
+    if not images:
+        return []
+
     inputs = _prepare_qwen_inputs(
         processor,
         images,
@@ -399,20 +422,51 @@ def generate_qwen_responses(
             inputs[key] = value.to(device)
 
     with torch.inference_mode():
-        outputs = model.generate(
-            **inputs,
-            do_sample=False,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=getattr(processor.tokenizer, "pad_token_id", None),
-            eos_token_id=getattr(processor.tokenizer, "eos_token_id", None),
-        )
+        try:
+            outputs = model.generate(
+                **inputs,
+                do_sample=False,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=getattr(processor.tokenizer, "pad_token_id", None),
+                eos_token_id=getattr(processor.tokenizer, "eos_token_id", None),
+            )
+        except StopIteration as exc:
+            if len(images) == 1:
+                raise RuntimeError(
+                    "Qwen generation failed while constructing multimodal position ids for a single image."
+                ) from exc
 
-    prompt_length = inputs["input_ids"].shape[1]
-    generated_ids = outputs[:, prompt_length:]
-    return processor.batch_decode(
-        generated_ids,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False,
+            midpoint = max(1, len(images) // 2)
+            log.warning(
+                "Qwen generation hit a batching bug for %d images; retrying as sub-batches of %d and %d.",
+                len(images),
+                midpoint,
+                len(images) - midpoint,
+            )
+            left_responses = generate_qwen_responses(
+                model,
+                processor,
+                device,
+                images[:midpoint],
+                instruction_body,
+                system_prompt=system_prompt,
+                max_new_tokens=max_new_tokens,
+            )
+            right_responses = generate_qwen_responses(
+                model,
+                processor,
+                device,
+                images[midpoint:],
+                instruction_body,
+                system_prompt=system_prompt,
+                max_new_tokens=max_new_tokens,
+            )
+            return left_responses + right_responses
+
+    return _decode_qwen_outputs(
+        processor=processor,
+        inputs=inputs,
+        outputs=outputs,
     )
 
 

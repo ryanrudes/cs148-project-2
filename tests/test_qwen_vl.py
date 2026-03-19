@@ -235,15 +235,55 @@ def test_compute_qwen_eval_metrics_counts_invalids():
 
 
 def test_build_qwen_conversation_with_custom_system_prompt():
+    sample_image = Image.new("RGB", (2, 2), color=(10, 20, 30))
     conversation = qwen_vl.build_qwen_conversation_with_system_prompt(
         instruction_body="Focus on the overall shape.",
         system_prompt="You are a custom digit classifier.",
+        image=sample_image,
     )
 
     assert conversation[0]["role"] == "system"
     assert conversation[0]["content"][0]["text"] == "You are a custom digit classifier."
     assert conversation[1]["role"] == "user"
+    assert conversation[1]["content"][0]["image"] is sample_image
     assert conversation[1]["content"][1]["text"] == "Focus on the overall shape."
+
+
+def test_prepare_qwen_inputs_uses_batched_chat_template():
+    sample_images = [
+        Image.new("RGB", (2, 2), color=(10, 20, 30)),
+        Image.new("RGB", (2, 2), color=(40, 50, 60)),
+    ]
+    captured: dict[str, object] = {}
+
+    class _FakeProcessor:
+        def apply_chat_template(self, conversations, **kwargs):
+            captured["conversations"] = conversations
+            captured["kwargs"] = kwargs
+            return {
+                "input_ids": torch.tensor([[1, 2, 3], [1, 2, 3]], dtype=torch.long),
+                "attention_mask": torch.tensor([[1, 1, 1], [1, 1, 1]], dtype=torch.long),
+            }
+
+    inputs = qwen_vl._prepare_qwen_inputs(
+        _FakeProcessor(),
+        sample_images,
+        "Focus on the overall shape.",
+        system_prompt="You are a custom digit classifier.",
+    )
+
+    assert set(inputs) == {"input_ids", "attention_mask"}
+    conversations = captured["conversations"]
+    assert len(conversations) == 2
+    assert conversations[0][1]["content"][0]["image"] is sample_images[0]
+    assert conversations[1][1]["content"][0]["image"] is sample_images[1]
+    assert captured["kwargs"] == {
+        "tokenize": True,
+        "add_generation_prompt": True,
+        "return_dict": True,
+        "return_tensors": "pt",
+        "padding": True,
+    }
 
 
 def test_inspect_qwen_tokenization_uses_loaded_tokenizer(monkeypatch):
@@ -399,6 +439,54 @@ def test_predict_qwen_digits_updates_progress(monkeypatch):
     }
     advances = [update["advance"] for update in recorded_updates if update["kind"] == "update" and "advance" in update]
     assert advances == [2, 1]
+
+
+def test_generate_qwen_responses_splits_batch_on_stop_iteration(monkeypatch):
+    sample_images = [Image.new("RGB", (2, 2), color=(idx, idx, idx)) for idx in range(4)]
+
+    class _FakeTokenizer:
+        pad_token_id = 0
+        eos_token_id = 1
+
+    class _FakeProcessor:
+        tokenizer = _FakeTokenizer()
+
+        def batch_decode(self, generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False):
+            return [str(int(token_id)) for token_id in generated_ids[:, 0].tolist()]
+
+    class _FakeModel:
+        def __init__(self):
+            self.batch_sizes: list[int] = []
+
+        def generate(self, **kwargs):
+            batch_size = int(kwargs["input_ids"].shape[0])
+            self.batch_sizes.append(batch_size)
+            if batch_size > 2:
+                raise StopIteration
+            prompt_ids = kwargs["input_ids"]
+            generated_ids = torch.full((batch_size, 1), 7, dtype=prompt_ids.dtype)
+            return torch.cat([prompt_ids, generated_ids], dim=1)
+
+    def fake_prepare(processor, images, instruction_body, *, system_prompt):
+        batch_size = len(images)
+        return {
+            "input_ids": torch.ones((batch_size, 3), dtype=torch.long),
+            "attention_mask": torch.ones((batch_size, 3), dtype=torch.long),
+        }
+
+    monkeypatch.setattr(qwen_vl, "_prepare_qwen_inputs", fake_prepare)
+
+    model = _FakeModel()
+    responses = qwen_vl.generate_qwen_responses(
+        model,
+        _FakeProcessor(),
+        torch.device("cpu"),
+        sample_images,
+        "Focus on the overall shape.",
+    )
+
+    assert responses == ["7", "7", "7", "7"]
+    assert model.batch_sizes == [4, 2, 2]
 
 
 def test_build_qwen_split_indices_is_reproducible_and_balanced():
