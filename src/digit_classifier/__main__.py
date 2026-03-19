@@ -8,6 +8,10 @@ Usage::
     python -m digit_classifier infer --checkpoint best.pt
     python -m digit_classifier export-pipeline --checkpoint checkpoints/<run_id>/best.pt --output pipeline-cnn.pt
     python -m digit_classifier generate-pareidolia [--out dataset_out] [--per-digit 50] [--batch]
+    python -m digit_classifier qwen --prompt "..." --dataset mnist
+    python -m digit_classifier qwen-evolve
+    python -m digit_classifier tokenize "digit 7"
+    python -m digit_classifier latent-visualize [--mode regular]
     python -m digit_classifier push-test-dataset --repo user/pareidolia-test [--dataset-dir dataset_out]
     python -m digit_classifier pull-test-dataset --repo user/pareidolia-test [--dataset-dir dataset_out]
     python -m digit_classifier visualize [--num-batches 2]
@@ -21,9 +25,11 @@ from multiprocessing import freeze_support
 
 from digit_classifier.config import AugmentConfig, Config, DataConfig, ModelConfig, TrainingConfig
 from digit_classifier.foundation_models import (
+    CLIP_ZERO_SHOT_PROMPT_PRESETS,
     DEFAULT_MODELS,
     FoundationModelConfig,
     FoundationModelFamily,
+    LatentVisualizationMode,
     get_foundation_model,
     list_foundation_model_repos,
 )
@@ -53,6 +59,7 @@ def _build_foundation_model_config(
         layer_norm=getattr(args, "layer_norm", False),
         seed=getattr(args, "seed", 42),
         n_folds=getattr(args, "n_folds", 5),
+        cv_repeats=getattr(args, "cv_repeats", 1),
         sweep_project=getattr(args, "sweep_project", "mnist-in-the-wild-clip"),
         sweep_id=getattr(args, "sweep_id", None),
         sweep_count=getattr(args, "sweep_count", None),
@@ -60,6 +67,15 @@ def _build_foundation_model_config(
         log_fold_runs=getattr(args, "log_fold_runs", True),
         save_checkpoints=getattr(args, "save_checkpoints", False),
         checkpoint_dir=getattr(args, "checkpoint_dir", "checkpoints"),
+        split_plan_path=getattr(args, "split_plan", None),
+        save_split_plan_path=getattr(args, "save_split_plan", None),
+        save_oof_bundle_path=getattr(args, "save_oof_bundle", None),
+        test_dataset_path=getattr(args, "test_dataset", None),
+        ablate_prompts=getattr(args, "ablate_prompts", False),
+        prompt_presets=tuple(getattr(args, "prompt_preset", ()) or ()),
+        prompt_file_path=getattr(args, "prompt_file", None),
+        ablation_datasets=getattr(args, "ablation_datasets", None),
+        save_prompt_ablation_path=getattr(args, "save_prompt_ablation", None),
         use_wandb=getattr(args, "use_wandb", True),
     )
 
@@ -373,12 +389,23 @@ def _handle_visualize(args: argparse.Namespace) -> None:
 def _handle_foundation_model(args: argparse.Namespace) -> None:
     from digit_classifier.foundation_models import (
         create_foundation_model_sweep,
+        run_foundation_model_eval,
         run_foundation_model,
         run_foundation_model_sweep_agent,
     )
 
     family = FoundationModelFamily(args.foundation_model_family)
     cfg = _build_foundation_model_config(args, family)
+    eval_checkpoint = getattr(args, "eval_checkpoint", None)
+    test_dataset = getattr(args, "test_dataset", None)
+    if eval_checkpoint:
+        run_foundation_model_eval(
+            cfg,
+            checkpoint_path=eval_checkpoint,
+            test_dataset_path=test_dataset,
+        )
+        return
+
     sweep_action = getattr(args, "sweep_action", "none")
     if sweep_action == "create":
         create_foundation_model_sweep(cfg)
@@ -386,6 +413,74 @@ def _handle_foundation_model(args: argparse.Namespace) -> None:
         run_foundation_model_sweep_agent(cfg)
     else:
         run_foundation_model(cfg)
+
+
+def _handle_latent_visualize(args: argparse.Namespace) -> None:
+    from digit_classifier.foundation_models import run_latent_visualization
+
+    clip_repo = args.clip_repo or DEFAULT_MODELS[FoundationModelFamily.CLIP].value.repo
+    run_latent_visualization(
+        clip_repo=clip_repo,
+        device=args.device,
+        mode=args.mode,
+        comparison_enabled=(
+            args.enable_comparison_modes
+            or args.mode != LatentVisualizationMode.REGULAR.value
+        ),
+        dino_repo=args.dino_repo,
+        clip_checkpoint_path=args.clip_checkpoint,
+        dino_checkpoint_path=args.dino_checkpoint,
+        clip_oof_bundle_path=args.clip_oof_bundle,
+        dino_oof_bundle_path=args.dino_oof_bundle,
+        feature_batch_size=args.feature_batch_size,
+        classifier_batch_size=args.batch_size,
+    )
+
+
+def _handle_qwen(args: argparse.Namespace) -> None:
+    from digit_classifier.qwen_vl import run_qwen_zero_shot
+
+    run_qwen_zero_shot(
+        repo=args.repo,
+        prompt=args.prompt,
+        dataset=args.dataset,
+        device=args.device,
+        test_dataset_path=args.test_dataset,
+    )
+
+
+def _handle_qwen_evolve(args: argparse.Namespace) -> None:
+    from digit_classifier.qwen_evolve import QwenEvolutionConfig, run_qwen_prompt_evolution
+
+    cfg = QwenEvolutionConfig(
+        repo=args.repo,
+        device=args.device,
+        llm_model=args.llm_model,
+        population_size=args.population_size,
+        generations=args.generations,
+        elite_size=args.elite_size,
+        children_per_generation=args.children_per_generation,
+        random_seed=args.random_seed,
+        cache_dir=args.cache_dir,
+    )
+    run_qwen_prompt_evolution(cfg)
+
+
+def _handle_tokenize(args: argparse.Namespace) -> None:
+    from digit_classifier.qwen_vl import run_qwen_tokenize
+
+    text = args.text
+    if text is None:
+        try:
+            text = input("Text to tokenize: ")
+        except EOFError as exc:
+            raise SystemExit("No text provided. Pass text as an argument or run interactively.") from exc
+
+    run_qwen_tokenize(
+        repo=args.repo,
+        text=text,
+        add_special_tokens=args.add_special_tokens,
+    )
 
 
 def _handle_finetune(args: argparse.Namespace) -> None:
@@ -430,12 +525,46 @@ def _add_foundation_model_args(
             action="store_true",
             help="Run zero-shot classification, instead of downstream finetuning",
         )
+        parser.add_argument(
+            "--ablate-prompts",
+            action="store_true",
+            help="Compare multiple CLIP zero-shot prompt templates in one run",
+        )
+        parser.add_argument(
+            "--prompt-preset",
+            action="append",
+            choices=list(CLIP_ZERO_SHOT_PROMPT_PRESETS),
+            default=None,
+            help="Built-in CLIP zero-shot prompt preset to include (repeatable)",
+        )
+        parser.add_argument(
+            "--prompt-file",
+            type=str,
+            default=None,
+            help="Optional file with one zero-shot prompt template per non-empty line",
+        )
+        parser.add_argument(
+            "--ablation-datasets",
+            type=str,
+            choices=["mnist", "pareidolia", "both"],
+            default=None,
+            help=(
+                "Datasets to evaluate in prompt-ablation mode. Defaults to both when --test-dataset "
+                "is provided, otherwise mnist."
+            ),
+        )
+        parser.add_argument(
+            "--save-prompt-ablation",
+            type=str,
+            default=None,
+            help="Optional JSON path for structured prompt-ablation results",
+        )
     parser.add_argument("--linear-probe", action="store_true", help="Run linear probe classification")
     parser.add_argument(
         "--head-type",
         type=str,
         default="mlp",
-        choices=["linear", "mlp", "deep_mlp"],
+        choices=["linear", "mlp", "deep_mlp", "medium_mlp", "deep_wide_mlp", "deep_extra_wide_mlp"],
         help="Classifier head type for downstream training",
     )
     parser.add_argument("--deep-mlp", action="store_true", help="Run deep MLP classification")
@@ -466,6 +595,12 @@ def _add_foundation_model_args(
     parser.add_argument("--layer-norm", action="store_true", help="Use layer normalization")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-folds", type=int, default=5)
+    parser.add_argument(
+        "--cv-repeats",
+        type=int,
+        default=1,
+        help="Number of repeated stratified K-fold runs used for OOF ensembling",
+    )
     parser.add_argument(
         "--sweep-action",
         type=str,
@@ -519,13 +654,172 @@ def _add_foundation_model_args(
         default="checkpoints",
         help="Directory for saved checkpoints",
     )
+    parser.add_argument(
+        "--split-plan",
+        type=str,
+        default=None,
+        help="Path to a JSON split plan to reuse so multiple models share the exact same CV splits",
+    )
+    parser.add_argument(
+        "--save-split-plan",
+        type=str,
+        default=None,
+        help="Path to write the explicit JSON split plan used for this non-sweep run",
+    )
+    parser.add_argument(
+        "--save-oof-bundle",
+        type=str,
+        default=None,
+        help="Path to save the aggregated repeated-CV OOF prediction bundle for comparison",
+    )
+    parser.add_argument(
+        "--eval-checkpoint",
+        type=str,
+        default=None,
+        help="Evaluate a saved classifier-head checkpoint instead of training",
+    )
+    parser.add_argument(
+        "--test-dataset",
+        type=str,
+        default=None,
+        help=(
+            "Pareidolia test dir (e.g. dataset_out). Use with --eval-checkpoint for trained-head "
+            "evaluation or with clip --zero-shot for zero-shot CLIP evaluation, including "
+            "prompt ablations."
+        ),
+    )
     parser.set_defaults(foundation_model_family=family.value)
+
+
+def _validate_args(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> None:
+    if args.command in {"clip", "dino"}:
+        eval_checkpoint = getattr(args, "eval_checkpoint", None)
+        test_dataset = getattr(args, "test_dataset", None)
+        ablate_prompts = getattr(args, "ablate_prompts", False)
+        prompt_preset = getattr(args, "prompt_preset", None)
+        prompt_file = getattr(args, "prompt_file", None)
+        ablation_datasets = getattr(args, "ablation_datasets", None)
+        save_prompt_ablation = getattr(args, "save_prompt_ablation", None)
+        uses_prompt_ablation_flags = any(
+            [ablate_prompts, prompt_preset, prompt_file, ablation_datasets, save_prompt_ablation]
+        )
+        if eval_checkpoint:
+            if not test_dataset:
+                parser.error("--eval-checkpoint and --test-dataset must be provided together")
+            if getattr(args, "sweep_action", "none") != "none":
+                parser.error("--eval-checkpoint cannot be used with --sweep-action")
+            if getattr(args, "zero_shot", False):
+                parser.error("--eval-checkpoint cannot be used with --zero-shot")
+            if uses_prompt_ablation_flags:
+                parser.error("--eval-checkpoint cannot be combined with CLIP prompt ablation flags")
+            return
+        if uses_prompt_ablation_flags and args.command != "clip":
+            parser.error("CLIP prompt ablations are only supported with the clip command")
+        if uses_prompt_ablation_flags and not ablate_prompts:
+            parser.error(
+                "--prompt-preset, --prompt-file, --ablation-datasets, and --save-prompt-ablation "
+                "require --ablate-prompts"
+            )
+        if ablate_prompts:
+            if args.command != "clip":
+                parser.error("--ablate-prompts is only supported for clip")
+            if not getattr(args, "zero_shot", False):
+                parser.error("--ablate-prompts requires --zero-shot")
+            if getattr(args, "sweep_action", "none") != "none":
+                parser.error("--ablate-prompts cannot be used with --sweep-action")
+            if ablation_datasets in {"pareidolia", "both"} and not test_dataset:
+                parser.error("--ablation-datasets pareidolia|both requires --test-dataset")
+        if test_dataset:
+            if args.command != "clip" or not getattr(args, "zero_shot", False):
+                parser.error(
+                    "--test-dataset without --eval-checkpoint is only supported with clip --zero-shot"
+                )
+            if getattr(args, "sweep_action", "none") != "none":
+                parser.error("--test-dataset cannot be used with --sweep-action in zero-shot mode")
+            return
+        if ablation_datasets in {"pareidolia", "both"}:
+            parser.error("--ablation-datasets pareidolia|both requires --test-dataset")
+
+        if getattr(args, "cv_repeats", 1) < 1:
+            parser.error("--cv-repeats must be at least 1")
+        if getattr(args, "sweep_action", "none") != "none":
+            disallowed = []
+            if getattr(args, "save_split_plan", None):
+                disallowed.append("--save-split-plan")
+            if getattr(args, "save_oof_bundle", None):
+                disallowed.append("--save-oof-bundle")
+            if disallowed:
+                parser.error(
+                    "the following arguments are only supported for non-sweep runs: "
+                    + ", ".join(disallowed)
+                )
+        return
+
+    if args.command == "qwen":
+        if args.dataset == "pareidolia" and not args.test_dataset:
+            parser.error("--dataset pareidolia requires --test-dataset")
+        if args.dataset == "mnist" and args.test_dataset:
+            parser.error("--test-dataset is only valid with --dataset pareidolia")
+        return
+
+    if args.command == "qwen-evolve":
+        return
+
+    if args.command != "latent-visualize":
+        return
+
+    comparison_enabled = (
+        args.enable_comparison_modes
+        or LatentVisualizationMode(args.mode) is not LatentVisualizationMode.REGULAR
+    )
+    if not comparison_enabled:
+        return
+
+    bundle_args = {
+        "--clip-oof-bundle": args.clip_oof_bundle,
+        "--dino-oof-bundle": args.dino_oof_bundle,
+    }
+    checkpoint_args = {
+        "--clip-checkpoint": args.clip_checkpoint,
+        "--dino-checkpoint": args.dino_checkpoint,
+    }
+    repo_args = {
+        "--clip-repo": args.clip_repo,
+        "--dino-repo": args.dino_repo,
+    }
+    using_oof_bundles = any(bundle_args.values())
+    using_checkpoints = any(checkpoint_args.values())
+
+    if using_oof_bundles and using_checkpoints:
+        parser.error(
+            "comparison modes must use either matching OOF bundles or matching checkpoints, not both"
+        )
+
+    missing_repo_args = [name for name, value in repo_args.items() if not value]
+    if missing_repo_args:
+        parser.error(
+            "comparison modes require the following arguments: "
+            + ", ".join(missing_repo_args)
+        )
+
+    selected_args = bundle_args if using_oof_bundles else checkpoint_args
+    missing_selected_args = [name for name, value in selected_args.items() if not value]
+    if missing_selected_args:
+        parser.error(
+            "comparison modes require the following arguments: "
+            + ", ".join(missing_selected_args)
+        )
 
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
+    from digit_classifier.qwen_vl import list_qwen_vl_repos
+
     parser = argparse.ArgumentParser(
         prog="digit_classifier",
         description="Digit classification training pipeline",
@@ -797,6 +1091,81 @@ def _build_parser() -> argparse.ArgumentParser:
     gp.add_argument("--yes", "-y", action="store_true",
                     help="Skip cost confirmation prompt")
 
+    # --- latent-visualize ---
+    lv = sub.add_parser("latent-visualize", help="Visualize CLIP latent space for MNIST in the Wild")
+    lv.add_argument(
+        "--mode",
+        default=LatentVisualizationMode.REGULAR.value,
+        choices=[mode.value for mode in LatentVisualizationMode],
+        help=(
+            "Initial view mode inside the visualizer: regular, CLIP > DINO, or DINO > CLIP"
+        ),
+    )
+    lv.add_argument(
+        "--enable-comparison-modes",
+        action="store_true",
+        help=(
+            "Load CLIP and DINO predictions so the visualizer can switch between Regular, "
+            "CLIP > DINO, and DINO > CLIP on the fly, and switch the displayed embedding "
+            "space between CLIP and DINO"
+        ),
+    )
+    lv.add_argument(
+        "--clip-repo",
+        default=None,
+        choices=list_foundation_model_repos(FoundationModelFamily.CLIP),
+        help=(
+            "CLIP repository to visualize. Defaults to the standard CLIP model in regular mode. "
+            "Required when comparison modes are enabled."
+        ),
+    )
+    lv.add_argument(
+        "--dino-repo",
+        default=None,
+        choices=list_foundation_model_repos(FoundationModelFamily.DINO),
+        help="DINO repository to compare against. Required when comparison modes are enabled.",
+    )
+    lv.add_argument(
+        "--clip-checkpoint",
+        default=None,
+        help=(
+            "Path to the saved CLIP classification head checkpoint. "
+            "Required for checkpoint-based comparison mode."
+        ),
+    )
+    lv.add_argument(
+        "--dino-checkpoint",
+        default=None,
+        help=(
+            "Path to the saved DINO classification head checkpoint. "
+            "Required for checkpoint-based comparison mode."
+        ),
+    )
+    lv.add_argument(
+        "--clip-oof-bundle",
+        default=None,
+        help=(
+            "Path to the saved CLIP repeated-CV OOF prediction bundle. "
+            "Required for OOF-bundle comparison mode."
+        ),
+    )
+    lv.add_argument(
+        "--dino-oof-bundle",
+        default=None,
+        help=(
+            "Path to the saved DINO repeated-CV OOF prediction bundle. "
+            "Required for OOF-bundle comparison mode."
+        ),
+    )
+    lv.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    lv.add_argument("--feature-batch-size", type=int, default=32)
+    lv.add_argument(
+        "--batch-size",
+        type=int,
+        default=128,
+        help="Batch size for classifier-head inference",
+    )
+
     # --- visualize ---
     viz = sub.add_parser("visualize", help="Visualise augmented training batches")
     viz.add_argument("--dataset", default="mnist_rgb_224")
@@ -847,6 +1216,63 @@ def _build_parser() -> argparse.ArgumentParser:
         sweep_project_default="mnist-in-the-wild-dino",
     )
 
+    # --- Qwen ---
+    qwen = sub.add_parser("qwen", help="Run Qwen2.5-VL zero-shot digit classification")
+    qwen.add_argument("--prompt", required=True, help="Instruction body for Qwen zero-shot evaluation")
+    qwen.add_argument("--dataset", required=True, choices=["mnist", "pareidolia"])
+    qwen.add_argument(
+        "--repo",
+        type=str,
+        default="Qwen/Qwen2.5-VL-3B-Instruct",
+        choices=list_qwen_vl_repos(),
+        help="Qwen VLM repository to use",
+    )
+    qwen.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    qwen.add_argument(
+        "--test-dataset",
+        type=str,
+        default=None,
+        help="Pareidolia test dir (e.g. dataset_out). Required with --dataset pareidolia.",
+    )
+
+    # --- Qwen evolve ---
+    qwen_evolve = sub.add_parser("qwen-evolve", help="Evolve Qwen2.5-VL prompts on MNIST-in-the-Wild")
+    qwen_evolve.add_argument(
+        "--repo",
+        type=str,
+        default="Qwen/Qwen2.5-VL-3B-Instruct",
+        choices=list_qwen_vl_repos(),
+        help="Qwen VLM repository to use",
+    )
+    qwen_evolve.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    qwen_evolve.add_argument("--llm-model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct")
+    qwen_evolve.add_argument("--population-size", type=int, default=8)
+    qwen_evolve.add_argument("--generations", type=int, default=4)
+    qwen_evolve.add_argument("--elite-size", type=int, default=3)
+    qwen_evolve.add_argument("--children-per-generation", type=int, default=5)
+    qwen_evolve.add_argument("--random-seed", type=int, default=0)
+    qwen_evolve.add_argument("--cache-dir", type=str, default="cache/qwen_prompt_evolution")
+
+    # --- tokenize ---
+    tokenize = sub.add_parser("tokenize", help="Inspect how text is tokenized by the Qwen tokenizer")
+    tokenize.add_argument(
+        "text",
+        nargs="?",
+        help="Text to tokenize. If omitted, the CLI will prompt interactively.",
+    )
+    tokenize.add_argument(
+        "--repo",
+        type=str,
+        default="Qwen/Qwen2.5-VL-3B-Instruct",
+        choices=list_qwen_vl_repos(),
+        help="Tokenizer repository to use",
+    )
+    tokenize.add_argument(
+        "--add-special-tokens",
+        action="store_true",
+        help="Include the tokenizer's special tokens in the encoded output",
+    )
+
     # --- finetune ---
     finetune = sub.add_parser(
         "finetune",
@@ -872,6 +1298,8 @@ def main() -> None:
     if args.command == "preprocess" and args.grayscale:
         args.color = False
 
+    _validate_args(parser, args)
+
     handlers = {
         "download": _handle_download,
         "preprocess": _handle_preprocess,
@@ -884,9 +1312,13 @@ def main() -> None:
         "pull-test-dataset": _handle_pull_test_dataset,
         "eval": _handle_eval,
         "generate-pareidolia": _handle_generate_pareidolia,
+        "latent-visualize": _handle_latent_visualize,
         "visualize": _handle_visualize,
         "clip": _handle_foundation_model,
         "dino": _handle_foundation_model,
+        "qwen": _handle_qwen,
+        "qwen-evolve": _handle_qwen_evolve,
+        "tokenize": _handle_tokenize,
         "finetune": _handle_finetune,
     }
     handlers[args.command](args)

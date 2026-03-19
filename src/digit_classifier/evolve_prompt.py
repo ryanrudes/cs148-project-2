@@ -14,7 +14,6 @@ import torch.nn.functional as F
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from digit_classifier.foundation_models import (
     FoundationModelConfig,
@@ -22,6 +21,14 @@ from digit_classifier.foundation_models import (
     compute_foundation_model_features,
     get_foundation_model,
     load_foundation_model,
+)
+from digit_classifier.prompt_evolution_common import (
+    PopulationStats,
+    PromptLLM,
+    SearchStats,
+    get_best_device,
+    get_model_move_dtype,
+    save_json_artifact,
 )
 
 logging.basicConfig(
@@ -195,31 +202,6 @@ class EvolutionConfig:
 
 
 @dataclass
-class SearchStats:
-    llm_batches_attempted: int = 0
-    llm_raw_templates: int = 0
-    invalid_templates: int = 0
-    exact_duplicates: int = 0
-    near_duplicates: int = 0
-    accepted_novel_templates: int = 0
-    lexical_mutations_used: int = 0
-    crossover_children_used: int = 0
-
-
-@dataclass
-class PopulationStats:
-    population_size: int
-    diversity: int
-    elite_count: int
-    children_count: int
-    llm_generated_children: int = 0
-    lexical_mutation_children: int = 0
-    crossover_children: int = 0
-    recombined_children: int = 0
-    filler_candidates: int = 0
-
-
-@dataclass
 class OffspringBuildResult:
     children: list[Candidate]
     search_stats: SearchStats
@@ -227,62 +209,6 @@ class OffspringBuildResult:
     lexical_mutation_children: int = 0
     crossover_children: int = 0
     recombined_children: int = 0
-
-
-class PromptLLM:
-    def __init__(self, model_name: str, device: str, max_new_tokens: int, temperature: float, top_p: float):
-        self.model_name = model_name
-        self.device = device
-        self.max_new_tokens = max_new_tokens
-        self.temperature = temperature
-        self.top_p = top_p
-
-        log.info("Loading prompt-evolution LLM from %s", model_name)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        torch_dtype = get_llm_torch_dtype(device)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch_dtype,
-        )
-        self.model.to(device)
-        self.model.eval()
-
-    def generate_templates(self, system_prompt: str, user_prompt: str, rng: random.Random) -> list[str]:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-        prompt_text = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        inputs = self.tokenizer(
-            prompt_text,
-            return_tensors="pt",
-            padding=True,
-        )
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-        with torch.inference_mode():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=True,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
-
-        generated = outputs[0, inputs["input_ids"].shape[1]:]
-        text = self.tokenizer.decode(generated, skip_special_tokens=True)
-        templates = extract_prompt_templates(text)
-        rng.shuffle(templates)
-        return templates
 
 
 def extract_prompt_templates(text: str) -> list[str]:
@@ -312,30 +238,6 @@ def has_only_digit_placeholder(template: str) -> bool:
 
 def instantiate_template(template: str, digit: str) -> str:
     return template.replace("{digit}", digit)
-
-
-def get_best_device(use_mps: bool = True) -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    if use_mps and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
-def get_llm_torch_dtype(device: str) -> torch.dtype:
-    if device == "cuda":
-        return torch.float16
-    if device == "mps":
-        return torch.float16
-    return torch.float32
-
-
-def get_model_move_dtype(device: str) -> torch.dtype | None:
-    if device == "cuda":
-        return torch.float16
-    if device == "mps":
-        return None
-    return None
 
 
 def build_candidate(template: str, use_word: bool) -> PromptCandidate | None:
@@ -1067,7 +969,12 @@ def collect_llm_template_proposals(
                 f"[dim]  LLM mutation batch {batch_index + 1}/{cfg.llm_mutation_batches_per_generation} "
                 f"(attempt {attempt + 1}/{cfg.max_attempts_per_batch})...[/dim]"
             )
-            mutated_templates = llm.generate_templates(system_prompt, mutation_prompt, rng)
+            mutated_templates = llm.generate_items(
+                system_prompt,
+                mutation_prompt,
+                extract_prompt_templates,
+                shuffle_rng=rng,
+            )
             search_stats.llm_raw_templates += len(mutated_templates)
             if not mutated_templates:
                 continue
@@ -1460,8 +1367,7 @@ def save_generation(
         ],
     }
     filename = f"{phase_prefix}generation_{generation:03d}.json" if phase_prefix else f"generation_{generation:03d}.json"
-    with (output_dir / filename).open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    save_json_artifact(output_dir / filename, payload)
 
 
 def initialize_slot_population(
