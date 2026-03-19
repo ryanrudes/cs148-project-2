@@ -321,6 +321,9 @@ def test_predict_qwen_digits_updates_progress(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
+        def refresh(self):
+            return None
+
         def add_task(self, description, *, total, batch, total_batches):
             recorded_updates.append(
                 {
@@ -478,6 +481,9 @@ def test_evaluate_qwen_prompt_population_updates_progress(monkeypatch):
 
         def __exit__(self, exc_type, exc, tb):
             return False
+
+        def refresh(self):
+            return None
 
         def add_task(self, description, *, total, cache_hits, cache_misses):
             recorded_updates.append(

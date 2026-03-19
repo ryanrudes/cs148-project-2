@@ -313,18 +313,23 @@ def evaluate_qwen_prompt_population(
             cache_hits=0,
             cache_misses=0,
         )
-        for prompt in prompts:
+        progress.refresh()
+        for prompt_index, prompt in enumerate(prompts, start=1):
             cache_key = build_qwen_prediction_cache_key(split_name, prompt)
             predictions = prediction_cache.get(cache_key)
             prompt_label = _truncate_qwen_prompt(prompt)
             if predictions is None:
                 cache_misses += 1
+                _log_qwen_status(
+                    f"{split_name.title()} prompt {prompt_index}/{len(prompts)}: evaluating {prompt_label}"
+                )
                 progress.update(
                     task_id,
                     description=f"Scoring {split_name} prompt: {prompt_label}",
                     cache_hits=cache_hits,
                     cache_misses=cache_misses,
                 )
+                progress.refresh()
                 _, predictions, _ = evaluate_qwen_zero_shot_prompt(
                     model,
                     processor,
@@ -338,12 +343,16 @@ def evaluate_qwen_prompt_population(
                 prediction_cache[cache_key] = predictions
             else:
                 cache_hits += 1
+                _log_qwen_status(
+                    f"{split_name.title()} prompt {prompt_index}/{len(prompts)}: cache hit for {prompt_label}"
+                )
                 progress.update(
                     task_id,
                     description=f"Scoring {split_name} prompt: {prompt_label} [cache]",
                     cache_hits=cache_hits,
                     cache_misses=cache_misses,
                 )
+                progress.refresh()
             metrics = compute_qwen_eval_metrics(predictions, label_subset)
             scores.append(
                 QwenPromptScore(
@@ -360,6 +369,7 @@ def evaluate_qwen_prompt_population(
                 cache_hits=cache_hits,
                 cache_misses=cache_misses,
             )
+            progress.refresh()
 
     return QwenPopulationEvaluationResult(
         split_name=split_name,

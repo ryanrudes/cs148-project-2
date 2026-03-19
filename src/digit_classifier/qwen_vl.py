@@ -412,6 +412,7 @@ def predict_qwen_digits(
             batch=0,
             total_batches=total_batches,
         )
+        progress.refresh()
         for batch_number, start in enumerate(range(0, len(target_indices), effective_batch_size), start=1):
             progress.update(
                 task_id,
@@ -419,6 +420,7 @@ def predict_qwen_digits(
                 batch=batch_number,
                 total_batches=total_batches,
             )
+            progress.refresh()
             batch_indices = target_indices[start : start + effective_batch_size]
             batch_images = [dataset_bundle.image_loader(index) for index in batch_indices]
             responses = generate_qwen_responses(
@@ -437,6 +439,7 @@ def predict_qwen_digits(
                 batch=batch_number,
                 total_batches=total_batches,
             )
+            progress.refresh()
 
     return predictions, raw_responses
 
