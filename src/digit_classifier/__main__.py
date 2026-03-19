@@ -421,6 +421,8 @@ def _handle_latent_visualize(args: argparse.Namespace) -> None:
     clip_repo = args.clip_repo or DEFAULT_MODELS[FoundationModelFamily.CLIP].value.repo
     run_latent_visualization(
         clip_repo=clip_repo,
+        dataset=getattr(args, "dataset", "mnist"),
+        test_dataset_path=getattr(args, "test_dataset", None),
         device=args.device,
         mode=args.mode,
         comparison_enabled=(
@@ -432,6 +434,11 @@ def _handle_latent_visualize(args: argparse.Namespace) -> None:
         dino_checkpoint_path=args.dino_checkpoint,
         clip_oof_bundle_path=args.clip_oof_bundle,
         dino_oof_bundle_path=args.dino_oof_bundle,
+        qwen_eval_bundle_path=getattr(args, "qwen_eval_bundle", None),
+        qwen_prompt=getattr(args, "qwen_prompt", None),
+        qwen_system_prompt=getattr(args, "qwen_system_prompt", None),
+        qwen_repo=getattr(args, "qwen_repo", None),
+        qwen_batch_size=getattr(args, "qwen_batch_size", 4),
         feature_batch_size=args.feature_batch_size,
         classifier_batch_size=args.batch_size,
     )
@@ -448,6 +455,7 @@ def _handle_qwen(args: argparse.Namespace) -> None:
         system_prompt=args.system_prompt,
         test_dataset_path=args.test_dataset,
         batch_size=args.batch_size,
+        save_eval_bundle_path=args.save_eval_bundle,
     )
 
 
@@ -777,11 +785,29 @@ def _validate_args(
     if args.command != "latent-visualize":
         return
 
+    dataset = getattr(args, "dataset", "mnist")
+    qwen_eval_bundle = getattr(args, "qwen_eval_bundle", None)
+    qwen_prompt = getattr(args, "qwen_prompt", None)
+    qwen_system_prompt = getattr(args, "qwen_system_prompt", None)
+    qwen_live_enabled = bool(qwen_prompt or qwen_system_prompt)
+    if dataset == "pareidolia" and not getattr(args, "test_dataset", None):
+        parser.error("--dataset pareidolia requires --test-dataset")
+    if dataset == "mnist" and getattr(args, "test_dataset", None):
+        parser.error("--test-dataset is only valid with --dataset pareidolia")
+    if qwen_eval_bundle and qwen_live_enabled:
+        parser.error("--qwen-eval-bundle cannot be combined with --qwen-prompt/--qwen-system-prompt")
+
     comparison_enabled = (
         args.enable_comparison_modes
         or LatentVisualizationMode(args.mode) is not LatentVisualizationMode.REGULAR
     )
+    if comparison_enabled and dataset != "mnist":
+        parser.error("comparison modes are only supported with --dataset mnist")
+    if comparison_enabled and (qwen_eval_bundle or qwen_live_enabled):
+        parser.error("Qwen analysis mode cannot be combined with CLIP-vs-DINO comparison mode")
     if not comparison_enabled:
+        if qwen_system_prompt and not qwen_prompt:
+            parser.error("--qwen-system-prompt requires --qwen-prompt")
         return
 
     bundle_args = {
@@ -1171,6 +1197,40 @@ def _build_parser() -> argparse.ArgumentParser:
         default=128,
         help="Batch size for classifier-head inference",
     )
+    lv.add_argument("--dataset", default="mnist", choices=["mnist", "pareidolia"])
+    lv.add_argument(
+        "--test-dataset",
+        default=None,
+        help="Pareidolia test dir (e.g. dataset_out). Required with --dataset pareidolia.",
+    )
+    lv.add_argument(
+        "--qwen-eval-bundle",
+        default=None,
+        help="Path to a saved Qwen per-sample evaluation bundle to overlay in the visualizer.",
+    )
+    lv.add_argument(
+        "--qwen-prompt",
+        default=None,
+        help="Run live Qwen evaluation with this instruction prompt and overlay the results.",
+    )
+    lv.add_argument(
+        "--qwen-system-prompt",
+        default=None,
+        help="Optional override for the fixed Qwen system prompt in live visualizer eval mode.",
+    )
+    lv.add_argument(
+        "--qwen-repo",
+        type=str,
+        default="Qwen/Qwen2.5-VL-3B-Instruct",
+        choices=list_qwen_vl_repos(),
+        help="Qwen VLM repository to use for live visualizer evaluation.",
+    )
+    lv.add_argument(
+        "--qwen-batch-size",
+        type=int,
+        default=4,
+        help="Batch size for live Qwen image evaluation inside the visualizer.",
+    )
 
     # --- visualize ---
     viz = sub.add_parser("visualize", help="Visualise augmented training batches")
@@ -1246,6 +1306,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Pareidolia test dir (e.g. dataset_out). Required with --dataset pareidolia.",
+    )
+    qwen.add_argument(
+        "--save-eval-bundle",
+        type=str,
+        default=None,
+        help="Optional path to save a reusable per-sample Qwen evaluation bundle.",
     )
 
     # --- Qwen evolve ---

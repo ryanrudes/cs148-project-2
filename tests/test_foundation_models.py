@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 import digit_classifier.evolve_prompt as evolve_prompt
 import digit_classifier.foundation_models as foundation_models
+import digit_classifier.qwen_vl as qwen_vl
 import digit_classifier.__main__ as cli
 from digit_classifier.__main__ import _build_parser
 
@@ -691,6 +694,7 @@ def test_plot_latent_space_exposes_multiple_embedding_views():
         initial_embedding_view="clip",
         embedding_view_labels={"clip": "CLIP", "dino": "DINO"},
         queryable_embedding_view="clip",
+        analysis_metadata={"analysis_type": "qwen", "qwen_repo": "Qwen/Qwen2.5-VL-3B-Instruct"},
     )
 
     assert fig.layout.meta["initial_embedding_view"] == "clip"
@@ -698,6 +702,7 @@ def test_plot_latent_space_exposes_multiple_embedding_views():
     assert sorted(fig.layout.meta["embedding_view_coords"].keys()) == ["clip", "dino"]
     assert "clip_true_label_probability" in fig.layout.meta["customdata_fields"]
     assert "dino_true_label_probability" in fig.layout.meta["customdata_fields"]
+    assert fig.layout.meta["analysis_metadata"]["analysis_type"] == "qwen"
 
 
 def test_plot_latent_space_side_panel_html_includes_density_heatmap_controls(tmp_path):
@@ -718,6 +723,7 @@ def test_plot_latent_space_side_panel_html_includes_density_heatmap_controls(tmp
             "clip_true_label_probability": np.linspace(0.2, 0.8, 6),
             "dino_true_label_probability": np.linspace(0.1, 0.7, 6),
         },
+        analysis_metadata={"analysis_type": "qwen", "qwen_repo": "Qwen/Qwen2.5-VL-3B-Instruct"},
     )
 
     assert result == output_path
@@ -738,10 +744,15 @@ def test_plot_latent_space_side_panel_html_includes_density_heatmap_controls(tmp
     assert "function buildRangeRelayout(indices)" in html
     assert "function getHomeReferenceIndices(fallbackIndices)" in html
     assert "function updateScatterVisibility()" in html
+    assert 'id="qwen-filter-select"' in html
     assert "option value=\"true_label_gap\"" in html
     assert "option value=\"local_advantage\"" in html
+    assert "option value=\"qwen_outcome\"" in html
+    assert "option value=\"local_error_rate\"" in html
     assert "CLIP - DINO p(true)" in html
     assert "CLIP advantage" in html
+    assert "function renderQwenSummary(indices)" in html
+    assert "Local error rate" in html
     assert "title: {text: 'Density'}" in html
     assert "resolveCurrentHomeRelayout()" in html
 
@@ -867,6 +878,8 @@ def test_handle_latent_visualize_uses_default_clip_repo(monkeypatch):
             "clip_repo": foundation_models.DEFAULT_MODELS[
                 foundation_models.FoundationModelFamily.CLIP
             ].value.repo,
+            "dataset": "mnist",
+            "test_dataset_path": None,
             "device": "cpu",
             "mode": "regular",
             "comparison_enabled": False,
@@ -875,10 +888,165 @@ def test_handle_latent_visualize_uses_default_clip_repo(monkeypatch):
             "dino_checkpoint_path": None,
             "clip_oof_bundle_path": None,
             "dino_oof_bundle_path": None,
+            "qwen_eval_bundle_path": None,
+            "qwen_prompt": None,
+            "qwen_system_prompt": None,
+            "qwen_repo": None,
+            "qwen_batch_size": 4,
             "feature_batch_size": 16,
             "classifier_batch_size": 32,
         }
     ]
+
+
+def test_run_latent_visualization_uses_qwen_bundle(monkeypatch):
+    calls: dict[str, object] = {}
+    labels = torch.tensor([0, 1, 2], dtype=torch.long)
+    images = torch.zeros((3, 3, 4, 4), dtype=torch.uint8)
+
+    monkeypatch.setattr(
+        foundation_models,
+        "_load_frozen_foundation_model",
+        lambda architecture, device: (object(), object()),
+    )
+    monkeypatch.setattr(
+        foundation_models,
+        "compute_foundation_model_features",
+        lambda model, processor, cfg, device: (
+            torch.zeros((3, 2)),
+            torch.zeros((3, 2)),
+            torch.tensor([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]], dtype=torch.float32),
+            labels,
+        ),
+    )
+    monkeypatch.setattr(
+        foundation_models,
+        "load_mnist_in_the_wild",
+        lambda cfg: (images, labels, None, None),
+    )
+
+    def fake_plot_latent_space(*args, **kwargs):
+        calls["point_metadata"] = kwargs["point_metadata"]
+        calls["analysis_metadata"] = kwargs["analysis_metadata"]
+        class _Result:
+            def show(self):
+                return None
+        return _Result()
+
+    monkeypatch.setattr("digit_classifier.latent_visualization.plot_latent_space", fake_plot_latent_space)
+
+    def fake_load_qwen_eval_bundle(path):
+        return {
+            "dataset_key": "mnist_in_the_wild",
+            "dataset_hash": "hash-123",
+            "labels": np.array([0, 1, 2], dtype=np.int64),
+            "predictions": np.array([0, 1, -1], dtype=np.int64),
+            "parse_valid": np.array([True, True, False], dtype=bool),
+            "raw_responses": np.array(["0", "1", "digit two"]),
+            "repo": "Qwen/Qwen2.5-VL-3B-Instruct",
+            "prompt": "Focus on shape.",
+            "system_prompt": "You are a digit classifier.",
+            "accuracy": 2 / 3,
+            "parse_rate": 2 / 3,
+            "invalid_count": 1,
+            "skipped_count": 0,
+        }
+
+    monkeypatch.setattr("digit_classifier.qwen_vl.load_qwen_eval_bundle", fake_load_qwen_eval_bundle)
+    monkeypatch.setattr("digit_classifier.qwen_vl.compute_qwen_dataset_hash", lambda dataset_key, labels: "hash-123")
+    monkeypatch.setattr("digit_classifier.qwen_vl.validate_qwen_eval_bundle", lambda bundle, **kwargs: None)
+
+    foundation_models.run_latent_visualization(
+        clip_repo="openai/clip-vit-base-patch32",
+        dataset="mnist",
+        qwen_eval_bundle_path="cache/qwen_eval_bundle.npz",
+        device="cpu",
+    )
+
+    assert calls["point_metadata"]["qwen_prediction"].tolist() == [0, 1, -1]
+    assert calls["point_metadata"]["qwen_parse_valid"].tolist() == [True, True, False]
+    assert calls["analysis_metadata"]["qwen_repo"] == "Qwen/Qwen2.5-VL-3B-Instruct"
+    assert calls["analysis_metadata"]["qwen_accuracy"] == pytest.approx(2 / 3)
+
+
+def test_run_latent_visualization_live_qwen_eval_for_pareidolia(monkeypatch):
+    calls: dict[str, object] = {}
+    labels = torch.tensor([4, 7], dtype=torch.long)
+
+    monkeypatch.setattr(
+        foundation_models,
+        "_load_frozen_foundation_model",
+        lambda architecture, device: (object(), object()),
+    )
+    monkeypatch.setattr(
+        foundation_models,
+        "compute_foundation_model_test_features",
+        lambda model, processor, cfg, device, test_dataset_path: (
+            torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32),
+            labels,
+        ),
+    )
+    monkeypatch.setattr(
+        foundation_models,
+        "_load_pareidolia_eval_samples",
+        lambda test_dataset_path: (
+            [Path("a.png"), Path("b.png")],
+            labels,
+        ),
+    )
+    monkeypatch.setattr(
+        foundation_models,
+        "_load_rgb_pil_image",
+        lambda path: Image.new("RGB", (4, 4), color=(255, 0, 0)),
+    )
+
+    def fake_plot_latent_space(*args, **kwargs):
+        calls["point_metadata"] = kwargs["point_metadata"]
+        calls["analysis_metadata"] = kwargs["analysis_metadata"]
+        class _Result:
+            def show(self):
+                return None
+        return _Result()
+
+    monkeypatch.setattr("digit_classifier.latent_visualization.plot_latent_space", fake_plot_latent_space)
+
+    class _FakeBundle:
+        dataset_key = "pareidolia"
+        display_name = "Pareidolia"
+        labels = np.array([4, 7], dtype=np.int64)
+        skipped_count = 1
+
+    monkeypatch.setattr("digit_classifier.qwen_vl.load_qwen_dataset", lambda dataset, test_dataset_path=None: _FakeBundle())
+    monkeypatch.setattr(
+        "digit_classifier.qwen_vl.load_qwen_vl_model",
+        lambda repo, device="auto": (object(), object(), torch.device("cpu")),
+    )
+    monkeypatch.setattr("digit_classifier.qwen_vl.resolve_qwen_system_prompt", lambda prompt: "Resolved system prompt")
+    monkeypatch.setattr(
+        "digit_classifier.qwen_vl.evaluate_qwen_zero_shot_prompt",
+        lambda model, processor, device, dataset_bundle, prompt, **kwargs: (
+            qwen_vl.QwenEvalMetrics(accuracy=0.5, parse_rate=1.0, invalid_count=0, num_samples=2),
+            [4, 3],
+            ["4", "3"],
+        ),
+    )
+    monkeypatch.setattr("digit_classifier.qwen_vl.compute_qwen_dataset_hash", lambda dataset_key, labels: "hash-456")
+
+    foundation_models.run_latent_visualization(
+        clip_repo="openai/clip-vit-base-patch32",
+        dataset="pareidolia",
+        test_dataset_path="dataset_out",
+        qwen_prompt="Focus on the global shape.",
+        qwen_system_prompt="System prompt",
+        qwen_repo="Qwen/Qwen2.5-VL-3B-Instruct",
+        qwen_batch_size=8,
+        device="cpu",
+    )
+
+    assert calls["point_metadata"]["qwen_prediction"].tolist() == [4, 3]
+    assert calls["point_metadata"]["qwen_correct"].tolist() == [True, False]
+    assert calls["analysis_metadata"]["qwen_prompt"] == "Focus on the global shape."
+    assert calls["analysis_metadata"]["qwen_skipped_count"] == 1
 
 
 def test_evolve_prompt_main_builds_clip_config(monkeypatch):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from dataclasses import dataclass
@@ -46,6 +47,8 @@ QWEN_SYSTEM_PROMPT = (
     "You are an expert visual digit classifier. Look at the provided image and determine which "
     "single decimal digit it depicts. Reply with exactly one digit character from 0 to 9 and nothing else."
 )
+QWEN_EVAL_BUNDLE_VERSION = 1
+QWEN_INVALID_PREDICTION_SENTINEL = -1
 DEFAULT_QWEN_BATCH_SIZE = 4
 DEFAULT_QWEN_MAX_NEW_TOKENS = 8
 QWEN_TOKENIZER_ALLOW_PATTERNS = (
@@ -121,6 +124,19 @@ def resolve_qwen_system_prompt(system_prompt: str | None) -> str:
     if not normalized:
         raise ValueError("Qwen system prompt override must not be empty")
     return normalized
+
+
+def compute_qwen_dataset_hash(
+    dataset_key: str,
+    labels: Sequence[int] | np.ndarray | torch.Tensor,
+) -> str:
+    labels_np = np.asarray(labels.detach().cpu().numpy() if torch.is_tensor(labels) else labels)
+    labels_np = labels_np.astype(np.int64, copy=False)
+    hasher = hashlib.sha256()
+    hasher.update(str(dataset_key).encode("utf-8"))
+    hasher.update(np.asarray(labels_np.shape, dtype=np.int64).tobytes())
+    hasher.update(np.ascontiguousarray(labels_np).tobytes())
+    return hasher.hexdigest()
 
 
 def _download_qwen_tokenizer_assets(repo: str) -> str:
@@ -219,6 +235,157 @@ def compute_qwen_eval_metrics(
         invalid_count=invalid_count,
         num_samples=num_samples,
     )
+
+
+def _bundle_predictions_array(predictions: Sequence[int | None]) -> np.ndarray:
+    return np.asarray(
+        [
+            QWEN_INVALID_PREDICTION_SENTINEL if prediction is None else int(prediction)
+            for prediction in predictions
+        ],
+        dtype=np.int64,
+    )
+
+
+def _bundle_parse_valid_array(predictions: Sequence[int | None]) -> np.ndarray:
+    return np.asarray([prediction is not None for prediction in predictions], dtype=bool)
+
+
+def save_qwen_eval_bundle(
+    path: str | Path,
+    *,
+    repo: str,
+    dataset_bundle: QwenDatasetBundle,
+    prompt: str,
+    system_prompt: str | None,
+    predictions: Sequence[int | None],
+    raw_responses: Sequence[str],
+    metrics: QwenEvalMetrics,
+) -> Path:
+    labels = np.asarray(dataset_bundle.labels, dtype=np.int64)
+    prediction_array = _bundle_predictions_array(predictions)
+    parse_valid = _bundle_parse_valid_array(predictions)
+    raw_response_array = np.asarray(list(raw_responses), dtype=np.str_)
+    if len(prediction_array) != len(labels):
+        raise ValueError("Qwen evaluation bundle predictions must align with labels")
+    if len(raw_response_array) != len(labels):
+        raise ValueError("Qwen evaluation bundle raw responses must align with labels")
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output_path,
+        version=np.asarray(QWEN_EVAL_BUNDLE_VERSION, dtype=np.int64),
+        repo=np.asarray(str(repo)),
+        dataset_key=np.asarray(dataset_bundle.dataset_key),
+        dataset_hash=np.asarray(compute_qwen_dataset_hash(dataset_bundle.dataset_key, labels)),
+        source_path=np.asarray(dataset_bundle.source_path),
+        prompt=np.asarray(str(prompt)),
+        system_prompt=np.asarray(resolve_qwen_system_prompt(system_prompt)),
+        labels=labels,
+        predictions=prediction_array,
+        parse_valid=parse_valid,
+        raw_responses=raw_response_array,
+        accuracy=np.asarray(metrics.accuracy, dtype=np.float32),
+        parse_rate=np.asarray(metrics.parse_rate, dtype=np.float32),
+        invalid_count=np.asarray(metrics.invalid_count, dtype=np.int64),
+        num_samples=np.asarray(metrics.num_samples, dtype=np.int64),
+        skipped_count=np.asarray(dataset_bundle.skipped_count, dtype=np.int64),
+    )
+    return output_path
+
+
+def load_qwen_eval_bundle(path: str | Path) -> dict[str, Any]:
+    bundle_path = Path(path)
+    bundle = np.load(bundle_path, allow_pickle=False)
+    required_fields = {
+        "version",
+        "repo",
+        "dataset_key",
+        "dataset_hash",
+        "source_path",
+        "prompt",
+        "system_prompt",
+        "labels",
+        "predictions",
+        "parse_valid",
+        "raw_responses",
+        "accuracy",
+        "parse_rate",
+        "invalid_count",
+        "num_samples",
+        "skipped_count",
+    }
+    missing = required_fields.difference(bundle.files)
+    if missing:
+        raise ValueError(
+            f"Qwen eval bundle at {bundle_path} is missing required fields: {sorted(missing)}"
+        )
+
+    result = {
+        "version": int(bundle["version"].item()),
+        "repo": str(bundle["repo"].item()),
+        "dataset_key": str(bundle["dataset_key"].item()),
+        "dataset_hash": str(bundle["dataset_hash"].item()),
+        "source_path": str(bundle["source_path"].item()),
+        "prompt": str(bundle["prompt"].item()),
+        "system_prompt": str(bundle["system_prompt"].item()),
+        "labels": bundle["labels"].astype(np.int64, copy=False),
+        "predictions": bundle["predictions"].astype(np.int64, copy=False),
+        "parse_valid": bundle["parse_valid"].astype(bool, copy=False),
+        "raw_responses": bundle["raw_responses"].astype(np.str_, copy=False),
+        "accuracy": float(bundle["accuracy"].item()),
+        "parse_rate": float(bundle["parse_rate"].item()),
+        "invalid_count": int(bundle["invalid_count"].item()),
+        "num_samples": int(bundle["num_samples"].item()),
+        "skipped_count": int(bundle["skipped_count"].item()),
+    }
+    if result["version"] != QWEN_EVAL_BUNDLE_VERSION:
+        raise ValueError(
+            f"Unsupported Qwen eval bundle version {result['version']} at {bundle_path}"
+        )
+    labels = result["labels"]
+    predictions = result["predictions"]
+    parse_valid = result["parse_valid"]
+    raw_responses = result["raw_responses"]
+    if predictions.shape != labels.shape:
+        raise ValueError("Qwen eval bundle predictions shape does not match labels")
+    if parse_valid.shape != labels.shape:
+        raise ValueError("Qwen eval bundle parse_valid shape does not match labels")
+    if raw_responses.shape != labels.shape:
+        raise ValueError("Qwen eval bundle raw_responses shape does not match labels")
+    if int(result["num_samples"]) != int(len(labels)):
+        raise ValueError("Qwen eval bundle num_samples does not match labels length")
+    if result["invalid_count"] != int((~parse_valid).sum()):
+        raise ValueError("Qwen eval bundle invalid_count does not match parse_valid")
+    if not np.all(predictions[~parse_valid] == QWEN_INVALID_PREDICTION_SENTINEL):
+        raise ValueError("Qwen eval bundle invalid predictions must use the configured sentinel")
+    expected_hash = compute_qwen_dataset_hash(result["dataset_key"], labels)
+    if result["dataset_hash"] != expected_hash:
+        raise ValueError("Qwen eval bundle dataset_hash does not match its labels")
+    return result
+
+
+def validate_qwen_eval_bundle(
+    bundle: dict[str, Any],
+    *,
+    expected_dataset_key: str,
+    expected_dataset_hash: str,
+    expected_labels: Sequence[int] | np.ndarray | torch.Tensor,
+) -> None:
+    if bundle["dataset_key"] != expected_dataset_key:
+        raise ValueError(
+            f"Qwen eval bundle dataset {bundle['dataset_key']!r} does not match expected dataset "
+            f"{expected_dataset_key!r}"
+        )
+    if bundle["dataset_hash"] != expected_dataset_hash:
+        raise ValueError("Qwen eval bundle dataset hash does not match the current dataset")
+    labels = np.asarray(
+        expected_labels.detach().cpu().numpy() if torch.is_tensor(expected_labels) else expected_labels,
+        dtype=np.int64,
+    )
+    if not np.array_equal(bundle["labels"], labels):
+        raise ValueError("Qwen eval bundle labels do not match the current dataset labels")
 
 
 def _rgb_pil_from_numpy_image(image: np.ndarray) -> Image.Image:
@@ -674,6 +841,7 @@ def run_qwen_zero_shot(
     datasets_dir: str | Path = "datasets",
     batch_size: int = DEFAULT_QWEN_BATCH_SIZE,
     max_new_tokens: int = DEFAULT_QWEN_MAX_NEW_TOKENS,
+    save_eval_bundle_path: str | Path | None = None,
 ) -> dict[str, Any]:
     resolved_system_prompt = resolve_qwen_system_prompt(system_prompt)
     model, processor, torch_device = load_qwen_vl_model(repo, device=device)
@@ -682,7 +850,7 @@ def run_qwen_zero_shot(
         test_dataset_path=test_dataset_path,
         datasets_dir=datasets_dir,
     )
-    metrics, _, _ = evaluate_qwen_zero_shot_prompt(
+    metrics, predictions, raw_responses = evaluate_qwen_zero_shot_prompt(
         model,
         processor,
         torch_device,
@@ -700,9 +868,23 @@ def run_qwen_zero_shot(
         system_prompt=resolved_system_prompt,
         metrics=metrics,
     )
+    saved_bundle_path: Path | None = None
+    if save_eval_bundle_path is not None:
+        saved_bundle_path = save_qwen_eval_bundle(
+            save_eval_bundle_path,
+            repo=repo,
+            dataset_bundle=dataset_bundle,
+            prompt=prompt,
+            system_prompt=resolved_system_prompt,
+            predictions=predictions,
+            raw_responses=raw_responses,
+            metrics=metrics,
+        )
+        console.print(f"saved_eval_bundle: {saved_bundle_path}")
     return {
         "repo": repo,
         "dataset": dataset_bundle.dataset_key,
+        "dataset_hash": compute_qwen_dataset_hash(dataset_bundle.dataset_key, dataset_bundle.labels),
         "display_name": dataset_bundle.display_name,
         "source_path": dataset_bundle.source_path,
         "system_prompt": resolved_system_prompt,
@@ -712,4 +894,5 @@ def run_qwen_zero_shot(
         "invalid_count": metrics.invalid_count,
         "num_samples": metrics.num_samples,
         "skipped_count": dataset_bundle.skipped_count,
+        "saved_eval_bundle": str(saved_bundle_path) if saved_bundle_path is not None else None,
     }

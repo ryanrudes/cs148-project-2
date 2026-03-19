@@ -30,6 +30,7 @@ def test_parser_qwen_args_and_validation():
     assert args.command == "qwen"
     assert args.repo == qwen_vl.DEFAULT_QWEN_VL_REPO
     assert args.system_prompt is None
+    assert args.save_eval_bundle is None
 
     args = parser.parse_args(
         [
@@ -143,6 +144,7 @@ def test_handle_qwen_dispatches_to_zero_shot(monkeypatch):
         batch_size=8,
         system_prompt="You are a custom digit classifier.",
         test_dataset=None,
+        save_eval_bundle="cache/qwen_eval_bundle.npz",
     )
     cli._handle_qwen(args)
 
@@ -154,7 +156,69 @@ def test_handle_qwen_dispatches_to_zero_shot(monkeypatch):
         "batch_size": 8,
         "system_prompt": "You are a custom digit classifier.",
         "test_dataset_path": None,
+        "save_eval_bundle_path": "cache/qwen_eval_bundle.npz",
     }
+
+
+def test_parser_latent_visualize_qwen_args_and_validation():
+    parser = _build_parser()
+
+    args = parser.parse_args(
+        [
+            "latent-visualize",
+            "--dataset",
+            "mnist",
+            "--qwen-eval-bundle",
+            "cache/qwen_eval_bundle.npz",
+        ]
+    )
+    cli._validate_args(parser, args)
+
+    args = parser.parse_args(
+        [
+            "latent-visualize",
+            "--dataset",
+            "pareidolia",
+            "--test-dataset",
+            "dataset_out",
+            "--qwen-prompt",
+            "Focus on the global shape.",
+        ]
+    )
+    cli._validate_args(parser, args)
+
+    args = parser.parse_args(
+        [
+            "latent-visualize",
+            "--dataset",
+            "pareidolia",
+            "--qwen-prompt",
+            "Focus on the global shape.",
+        ]
+    )
+    with pytest.raises(SystemExit):
+        cli._validate_args(parser, args)
+
+    args = parser.parse_args(
+        [
+            "latent-visualize",
+            "--dataset",
+            "mnist",
+            "--enable-comparison-modes",
+            "--clip-repo",
+            "openai/clip-vit-base-patch32",
+            "--dino-repo",
+            "facebook/dino-vitb16",
+            "--clip-checkpoint",
+            "clip.pt",
+            "--dino-checkpoint",
+            "dino.pt",
+            "--qwen-prompt",
+            "Focus on the global shape.",
+        ]
+    )
+    with pytest.raises(SystemExit):
+        cli._validate_args(parser, args)
 
 
 def test_handle_qwen_evolve_dispatches_batch_size(monkeypatch):
@@ -232,6 +296,82 @@ def test_compute_qwen_eval_metrics_counts_invalids():
     assert metrics.parse_rate == pytest.approx(0.75)
     assert metrics.invalid_count == 1
     assert metrics.num_samples == 4
+
+
+def test_save_load_and_validate_qwen_eval_bundle(tmp_path):
+    bundle = qwen_vl.QwenDatasetBundle(
+        dataset_key="mnist_in_the_wild",
+        display_name="MNIST-in-the-Wild",
+        labels=np.array([1, 2, 3], dtype=np.int64),
+        image_loader=lambda idx: Image.new("RGB", (2, 2)),
+        source_path="datasets/mnist_itw_rgb_336.npz",
+        skipped_count=0,
+    )
+    metrics = qwen_vl.QwenEvalMetrics(
+        accuracy=2 / 3,
+        parse_rate=2 / 3,
+        invalid_count=1,
+        num_samples=3,
+    )
+    output_path = tmp_path / "qwen_eval_bundle.npz"
+
+    saved_path = qwen_vl.save_qwen_eval_bundle(
+        output_path,
+        repo=qwen_vl.DEFAULT_QWEN_VL_REPO,
+        dataset_bundle=bundle,
+        prompt="Focus on the global shape.",
+        system_prompt=qwen_vl.QWEN_SYSTEM_PROMPT,
+        predictions=[1, None, 0],
+        raw_responses=["1", "digit two", "0"],
+        metrics=metrics,
+    )
+
+    loaded = qwen_vl.load_qwen_eval_bundle(saved_path)
+    assert loaded["dataset_key"] == "mnist_in_the_wild"
+    assert loaded["predictions"].tolist() == [1, qwen_vl.QWEN_INVALID_PREDICTION_SENTINEL, 0]
+    assert loaded["parse_valid"].tolist() == [True, False, True]
+    assert loaded["raw_responses"].tolist() == ["1", "digit two", "0"]
+    qwen_vl.validate_qwen_eval_bundle(
+        loaded,
+        expected_dataset_key="mnist_in_the_wild",
+        expected_dataset_hash=qwen_vl.compute_qwen_dataset_hash("mnist_in_the_wild", bundle.labels),
+        expected_labels=bundle.labels,
+    )
+
+
+def test_validate_qwen_eval_bundle_rejects_label_mismatch(tmp_path):
+    bundle = qwen_vl.QwenDatasetBundle(
+        dataset_key="mnist_in_the_wild",
+        display_name="MNIST-in-the-Wild",
+        labels=np.array([1, 2], dtype=np.int64),
+        image_loader=lambda idx: Image.new("RGB", (2, 2)),
+        source_path="datasets/mnist_itw_rgb_336.npz",
+    )
+    metrics = qwen_vl.QwenEvalMetrics(
+        accuracy=1.0,
+        parse_rate=1.0,
+        invalid_count=0,
+        num_samples=2,
+    )
+    output_path = tmp_path / "qwen_eval_bundle.npz"
+    qwen_vl.save_qwen_eval_bundle(
+        output_path,
+        repo=qwen_vl.DEFAULT_QWEN_VL_REPO,
+        dataset_bundle=bundle,
+        prompt="Focus on the global shape.",
+        system_prompt=qwen_vl.QWEN_SYSTEM_PROMPT,
+        predictions=[1, 2],
+        raw_responses=["1", "2"],
+        metrics=metrics,
+    )
+    loaded = qwen_vl.load_qwen_eval_bundle(output_path)
+    with pytest.raises(ValueError):
+        qwen_vl.validate_qwen_eval_bundle(
+            loaded,
+            expected_dataset_key="mnist_in_the_wild",
+            expected_dataset_hash=qwen_vl.compute_qwen_dataset_hash("mnist_in_the_wild", np.array([1, 3])),
+            expected_labels=np.array([1, 3]),
+        )
 
 
 def test_build_qwen_conversation_with_custom_system_prompt():

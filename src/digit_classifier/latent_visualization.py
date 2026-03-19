@@ -183,8 +183,41 @@ _SIDE_PANEL_HTML = """
       gap: 0.75rem;
       grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
     }
-    .cluster-item { text-align: center; }
+    .cluster-item {
+      text-align: center;
+      border: 2px solid transparent;
+      border-radius: 10px;
+      padding: 0.35rem;
+      background: white;
+    }
     .cluster-item img { width: 100%; height: auto; }
+    .cluster-item.correct { border-color: #2a9d8f; }
+    .cluster-item.wrong { border-color: #e76f51; }
+    .cluster-item.parse-fail { border-color: #6c757d; }
+    .summary-box {
+      margin-bottom: 0.9rem;
+      padding: 0.75rem;
+      border-radius: 10px;
+      background: white;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.45rem;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      margin-left: 0.35rem;
+    }
+    .badge-correct { background: #d8f3dc; color: #1b4332; }
+    .badge-wrong { background: #ffe8d6; color: #9c6644; }
+    .badge-invalid { background: #e9ecef; color: #495057; }
+    .summary-list {
+      margin: 0.35rem 0 0 0;
+      padding-left: 1rem;
+      font-size: 0.9rem;
+    }
+    .summary-list li { margin: 0.2rem 0; }
   </style>
 </head>
 <body>
@@ -194,11 +227,12 @@ _SIDE_PANEL_HTML = """
         <span><strong>Cluster mode:</strong></span>
         <label id="embedding-view-label" style="display: none;">Display: <select id="embedding-view-select"></select></label>
         <label id="mode-label" style="display: none;">View: <select id="mode-select"><option value="regular">Regular</option><option value="clip_over_dino">CLIP &gt; DINO</option><option value="dino_over_clip">DINO &gt; CLIP</option></select></label>
-        <label id="point-color-mode-label" style="display: none;">Point colors: <select id="point-color-mode-select"><option value="digit">Digit</option><option value="outcome">Outcome</option><option value="true_label_gap">True-label gap</option></select></label>
+        <label id="qwen-filter-label" style="display: none;">Qwen: <select id="qwen-filter-select"><option value="all">All</option><option value="correct">Correct</option><option value="wrong">Wrong</option><option value="parse_fail">Parse fail</option></select></label>
+        <label id="point-color-mode-label" style="display: none;">Point colors: <select id="point-color-mode-select"><option value="digit">Digit</option><option value="outcome">Outcome</option><option value="true_label_gap">True-label gap</option><option value="qwen_outcome">Qwen outcome</option></select></label>
         <label>K neighbors: <input type="number" id="k-input" value="9" min="1" max="50"></label>
         <label id="nn-mode-label" style="display: none;">NN in: <select id="nn-mode"><option value="embedding">Embedding space</option><option value="umap">UMAP space</option></select></label>
         <button id="heatmap-toggle-btn" type="button">Show heatmap</button>
-        <label id="heatmap-metric-label" style="display: none;">Heatmap: <select id="heatmap-metric-select"><option value="density">Density</option><option value="local_advantage">Local advantage</option></select></label>
+        <label id="heatmap-metric-label" style="display: none;">Heatmap: <select id="heatmap-metric-select"><option value="density">Density</option><option value="local_advantage">Local advantage</option><option value="local_error_rate">Local error rate</option></select></label>
         <button id="scatter-toggle-btn" type="button">Hide scatter</button>
         <label>Point size: <input type="range" id="scatter-size-input" value="8" min="2" max="24" step="1"><span id="scatter-size-value">8</span></label>
         <button id="home-scale-toggle-btn" type="button">Home scale: current</button>
@@ -241,6 +275,8 @@ _SIDE_PANEL_HTML = """
     const embeddingViewSelect = document.getElementById('embedding-view-select');
     const modeLabel = document.getElementById('mode-label');
     const modeSelect = document.getElementById('mode-select');
+    const qwenFilterLabel = document.getElementById('qwen-filter-label');
+    const qwenFilterSelect = document.getElementById('qwen-filter-select');
     const pointColorModeLabel = document.getElementById('point-color-mode-label');
     const pointColorModeSelect = document.getElementById('point-color-mode-select');
     const heatmapMetricLabel = document.getElementById('heatmap-metric-label');
@@ -251,6 +287,7 @@ _SIDE_PANEL_HTML = """
     const customdataFields = (figure.layout.meta && figure.layout.meta.customdata_fields) || [];
     const initialFilterMode = (figure.layout.meta && figure.layout.meta.initial_filter_mode) || 'regular';
     const baseTitle = (figure.layout.meta && figure.layout.meta.base_title) || 'Latent Space (2D)';
+    const analysisMetadata = (figure.layout.meta && figure.layout.meta.analysis_metadata) || {};
     const embedServerUrl = 'EMBED_SERVER_URL';
     const embeddingViewCoords = (figure.layout.meta && figure.layout.meta.embedding_view_coords) || {
       default: {
@@ -276,10 +313,25 @@ _SIDE_PANEL_HTML = """
       clip_only_correct: 'CLIP only correct',
       dino_only_correct: 'DINO only correct',
     };
+    const QWEN_OUTCOME_COLOR_BY_KEY = {
+      correct: '#2a9d8f',
+      wrong: '#e76f51',
+      parse_fail: '#6c757d',
+    };
+    const QWEN_OUTCOME_LABEL_BY_KEY = {
+      correct: 'Correct',
+      wrong: 'Wrong',
+      parse_fail: 'Parse fail',
+    };
     const TRUE_LABEL_GAP_COLORSCALE = [
       [0, '#2166ac'],
       [0.5, '#f7f7f7'],
       [1, '#b2182b'],
+    ];
+    const QWEN_ERROR_RATE_COLORSCALE = [
+      [0, '#d8f3dc'],
+      [0.5, '#ffe8d6'],
+      [1, '#b02a37'],
     ];
 
     const fullData = {
@@ -287,6 +339,10 @@ _SIDE_PANEL_HTML = """
       marker: JSON.parse(JSON.stringify(figure.data[0].marker || {}))
     };
     const comparisonEnabled = customdataFields.indexOf('clip_prediction') !== -1 && customdataFields.indexOf('dino_prediction') !== -1;
+    const qwenEnabled = customdataFields.indexOf('qwen_prediction') !== -1
+      && customdataFields.indexOf('qwen_parse_valid') !== -1
+      && customdataFields.indexOf('qwen_raw_response') !== -1
+      && customdataFields.indexOf('qwen_correct') !== -1;
     const trueLabelProbabilityEnabled = comparisonEnabled
       && customdataFields.indexOf('clip_true_label_probability') !== -1
       && customdataFields.indexOf('dino_true_label_probability') !== -1;
@@ -303,6 +359,7 @@ _SIDE_PANEL_HTML = """
 
     let clusterIndices = null;
     let clusterRenderMode = null;
+    let clusterCenterIdx = null;
     let currentEmbeddingView = availableEmbeddingViews.indexOf(configuredInitialEmbeddingView) !== -1
       ? configuredInitialEmbeddingView
       : (availableEmbeddingViews[0] || 'default');
@@ -315,6 +372,7 @@ _SIDE_PANEL_HTML = """
     let heatmapOpacity = 0.65;
     let heatmapMetric = 'density';
     let pointColorMode = 'digit';
+    let qwenFilterMode = 'all';
     let baseScatterSize = 8;
     let currentHomeRelayout = null;
     let scatterVisible = true;
@@ -451,6 +509,16 @@ _SIDE_PANEL_HTML = """
       return Number.isNaN(numericValue) ? null : numericValue;
     }
 
+    function getBooleanValue(value) {
+      if (value === null || value === undefined || value === '') return null;
+      if (value === true || value === false) return value;
+      if (typeof value === 'number') return value !== 0;
+      const normalized = String(value).trim().toLowerCase();
+      if (normalized === 'true' || normalized === '1') return true;
+      if (normalized === 'false' || normalized === '0') return false;
+      return null;
+    }
+
     function formatProbability(value) {
       return value === null ? '' : value.toFixed(3);
     }
@@ -496,15 +564,114 @@ _SIDE_PANEL_HTML = """
         })
       : [];
 
+    const qwenPointStats = qwenEnabled
+      ? allIndices.map(idx => {
+          const cd = fullData.customdata ? fullData.customdata[idx] : null;
+          const label = getComparableValue(getCustomValue(cd, 'label'));
+          const qwenPrediction = getComparableValue(getCustomValue(cd, 'qwen_prediction'));
+          const qwenParseValid = getBooleanValue(getCustomValue(cd, 'qwen_parse_valid')) === true;
+          const qwenCorrect = getBooleanValue(getCustomValue(cd, 'qwen_correct')) === true;
+          const qwenRawResponse = getCustomValue(cd, 'qwen_raw_response');
+          return {
+            label: label,
+            qwenPrediction: qwenPrediction,
+            qwenParseValid: qwenParseValid,
+            qwenCorrect: qwenCorrect,
+            qwenRawResponse: qwenRawResponse,
+            outcomeKey: !qwenParseValid ? 'parse_fail' : (qwenCorrect ? 'correct' : 'wrong'),
+            localErrorScore: (!qwenParseValid || !qwenCorrect) ? 1 : 0,
+          };
+        })
+      : [];
+
     function getComparisonStats(idx) {
       if (!comparisonEnabled || idx < 0 || idx >= comparisonPointStats.length) return null;
       return comparisonPointStats[idx];
+    }
+
+    function getQwenStats(idx) {
+      if (!qwenEnabled || idx < 0 || idx >= qwenPointStats.length) return null;
+      return qwenPointStats[idx];
     }
 
     function escapeHtml(value) {
       const div = document.createElement('div');
       div.textContent = value == null ? '' : String(value);
       return div.innerHTML;
+    }
+
+    function formatPercent(numerator, denominator) {
+      if (!denominator) return '0.0%';
+      return ((100 * numerator) / denominator).toFixed(1) + '%';
+    }
+
+    function qwenBadgeHtml(outcomeKey) {
+      if (outcomeKey === 'correct') {
+        return '<span class="badge badge-correct">Correct</span>';
+      }
+      if (outcomeKey === 'wrong') {
+        return '<span class="badge badge-wrong">Wrong</span>';
+      }
+      return '<span class="badge badge-invalid">Parse fail</span>';
+    }
+
+    function computeQwenSubsetStats(indices) {
+      if (!qwenEnabled) return null;
+      const stats = {
+        total: indices.length,
+        correct: 0,
+        wrong: 0,
+        parseFail: 0,
+        confusionCounts: {},
+      };
+      indices.forEach(idx => {
+        const pointStats = getQwenStats(idx);
+        if (!pointStats) return;
+        if (!pointStats.qwenParseValid) {
+          stats.parseFail += 1;
+          return;
+        }
+        if (pointStats.qwenCorrect) {
+          stats.correct += 1;
+        } else {
+          stats.wrong += 1;
+        }
+        const key = String(pointStats.label) + '→' + String(pointStats.qwenPrediction);
+        stats.confusionCounts[key] = (stats.confusionCounts[key] || 0) + 1;
+      });
+      return stats;
+    }
+
+    function renderQwenConfusions(confusionCounts) {
+      const entries = Object.entries(confusionCounts || {})
+        .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+        .slice(0, 3);
+      if (!entries.length) {
+        return '<li>No wrong parsed predictions in this view.</li>';
+      }
+      return entries.map(([pair, count]) => '<li>' + escapeHtml(pair) + ' (' + escapeHtml(count) + ')</li>').join('');
+    }
+
+    function renderQwenSummary(indices) {
+      const stats = computeQwenSubsetStats(indices);
+      if (!stats) {
+        return '<span class="preview-placeholder">Hover over a point to preview</span>';
+      }
+      const parsedCount = stats.total - stats.parseFail;
+      return ''
+        + '<div class="summary-box">'
+        + '<div class="preview-label">Qwen summary</div>'
+        + '<div class="preview-meta"><strong>Visible points:</strong> ' + escapeHtml(stats.total) + '</div>'
+        + '<div class="preview-meta"><strong>Accuracy:</strong> ' + escapeHtml(formatPercent(stats.correct, stats.total)) + '</div>'
+        + '<div class="preview-meta"><strong>Parse rate:</strong> ' + escapeHtml(formatPercent(parsedCount, stats.total)) + '</div>'
+        + '<div class="preview-meta"><strong>Correct / wrong / parse fail:</strong> '
+        + escapeHtml(stats.correct) + ' / ' + escapeHtml(stats.wrong) + ' / ' + escapeHtml(stats.parseFail) + '</div>'
+        + '<div class="preview-meta"><strong>Repo:</strong> ' + escapeHtml(analysisMetadata.qwen_repo || '') + '</div>'
+        + '<div class="preview-meta"><strong>Prompt:</strong> ' + escapeHtml(analysisMetadata.qwen_prompt || '') + '</div>'
+        + '<div class="preview-meta"><strong>System prompt:</strong> ' + escapeHtml(analysisMetadata.qwen_system_prompt || '') + '</div>'
+        + '<div class="preview-meta"><strong>Top confusions:</strong></div>'
+        + '<ul class="summary-list">' + renderQwenConfusions(stats.confusionCounts) + '</ul>'
+        + '</div>';
     }
 
     function renderPointPreview(customdata) {
@@ -519,6 +686,10 @@ _SIDE_PANEL_HTML = """
       const dinoPrediction = getCustomValue(customdata, 'dino_prediction');
       const clipTrueLabelProbability = getNumericValue(getCustomValue(customdata, 'clip_true_label_probability'));
       const dinoTrueLabelProbability = getNumericValue(getCustomValue(customdata, 'dino_true_label_probability'));
+      const qwenPrediction = getComparableValue(getCustomValue(customdata, 'qwen_prediction'));
+      const qwenParseValid = getBooleanValue(getCustomValue(customdata, 'qwen_parse_valid')) === true;
+      const qwenCorrect = getBooleanValue(getCustomValue(customdata, 'qwen_correct')) === true;
+      const qwenRawResponse = getCustomValue(customdata, 'qwen_raw_response');
 
       let html = '<img src="data:image/png;base64,' + imageB64 + '" alt="">';
       html += '<div class="preview-label">Ground truth: ' + escapeHtml(label) + ' &middot; Index: ' + escapeHtml(index) + '</div>';
@@ -539,6 +710,13 @@ _SIDE_PANEL_HTML = """
         html += '<div class="preview-meta"><strong>Gap:</strong> ' + escapeHtml(
           formatSignedValue(clipTrueLabelProbability - dinoTrueLabelProbability)
         ) + '</div>';
+      }
+      if (qwenEnabled) {
+        const qwenOutcomeKey = !qwenParseValid ? 'parse_fail' : (qwenCorrect ? 'correct' : 'wrong');
+        html += '<div class="preview-meta"><strong>Qwen:</strong> '
+          + escapeHtml(qwenParseValid ? qwenPrediction : 'invalid')
+          + qwenBadgeHtml(qwenOutcomeKey) + '</div>';
+        html += '<div class="preview-meta"><strong>Raw response:</strong> ' + escapeHtml(qwenRawResponse || '') + '</div>';
       }
 
       return html;
@@ -592,7 +770,7 @@ _SIDE_PANEL_HTML = """
       heatmapResolutionInput.value = String(heatmapResolution);
       heatmapOpacityInput.value = heatmapOpacity.toFixed(2);
       heatmapOpacityValue.textContent = heatmapOpacity.toFixed(2);
-      if (comparisonEnabled) {
+      if (comparisonEnabled || qwenEnabled) {
         heatmapMetricSelect.value = heatmapMetric;
       }
     }
@@ -613,14 +791,20 @@ _SIDE_PANEL_HTML = """
     }
 
     function updatePointColorControls() {
-      if (!comparisonEnabled) return;
+      if (!comparisonEnabled && !qwenEnabled) return;
       pointColorModeSelect.value = pointColorMode;
+    }
+
+    function updateQwenFilterControls() {
+      if (!qwenEnabled) return;
+      qwenFilterSelect.value = qwenFilterMode;
     }
 
     function updateLegendVisibility() {
       if (!plotDiv.data || plotDiv.data.length === 0) return;
       const showDigitLegend = pointColorMode === 'digit';
-      const showOutcomeLegend = comparisonEnabled && pointColorMode === 'outcome';
+      const showOutcomeLegend = (comparisonEnabled && pointColorMode === 'outcome')
+        || (qwenEnabled && pointColorMode === 'qwen_outcome');
       Plotly.restyle(
         plotDiv,
         {visible: DIGIT_LEGEND_TRACE_INDICES.map(() => showDigitLegend)},
@@ -631,6 +815,49 @@ _SIDE_PANEL_HTML = """
         {visible: OUTCOME_LEGEND_TRACE_INDICES.map(() => showOutcomeLegend)},
         OUTCOME_LEGEND_TRACE_INDICES
       );
+      if (showOutcomeLegend) {
+        if (comparisonEnabled && pointColorMode === 'outcome') {
+          const legendKeys = ['both_correct', 'both_wrong', 'clip_only_correct', 'dino_only_correct'];
+          Plotly.restyle(
+            plotDiv,
+            {
+              name: legendKeys.map(key => OUTCOME_LABEL_BY_KEY[key]),
+              marker: legendKeys.map(key => ({
+                size: 10,
+                color: OUTCOME_COLOR_BY_KEY[key],
+                symbol: 'circle',
+                line: {width: 0.5, color: 'white'},
+              })),
+              visible: legendKeys.map(() => true),
+            },
+            OUTCOME_LEGEND_TRACE_INDICES,
+          );
+        } else if (qwenEnabled && pointColorMode === 'qwen_outcome') {
+          const legendKeys = ['correct', 'wrong', 'parse_fail'];
+          const names = legendKeys
+            .map(key => QWEN_OUTCOME_LABEL_BY_KEY[key])
+            .concat(['Unused']);
+          const markers = legendKeys
+            .map(key => ({
+              size: 10,
+              color: QWEN_OUTCOME_COLOR_BY_KEY[key],
+              symbol: 'circle',
+              line: {width: 0.5, color: 'white'},
+            }))
+            .concat([{
+              size: 10,
+              color: '#ffffff',
+              symbol: 'circle',
+              line: {width: 0, color: '#ffffff'},
+            }]);
+          const visible = [true, true, true, false];
+          Plotly.restyle(
+            plotDiv,
+            {name: names, marker: markers, visible: visible},
+            OUTCOME_LEGEND_TRACE_INDICES,
+          );
+        }
+      }
     }
 
     function getHomeReferenceIndices(fallbackIndices) {
@@ -659,19 +886,53 @@ _SIDE_PANEL_HTML = """
       if (!scatterVisible) {
         return '<span class="preview-placeholder">Scatter hidden. Show scatter to inspect individual points.</span>';
       }
+      if (qwenEnabled) {
+        return renderQwenSummary(displayIndices);
+      }
       return '<span class="preview-placeholder">Hover over a point to preview</span>';
     }
 
-    function showClusterGrid(indices) {
+    function showClusterGrid(indices, centerIdx = null) {
       if (!indices.length) {
         previewDiv.innerHTML = defaultPreviewHtml();
         return;
       }
       if (fullData.customdata && fullData.customdata[0] && getCustomValue(fullData.customdata[0], 'image_b64')) {
-        let html = '<div class="cluster-grid">';
+        let html = '';
+        if (qwenEnabled) {
+          const focusIdx = centerIdx === null ? indices[0] : centerIdx;
+          const focusCustomdata = fullData.customdata[focusIdx];
+          const focusStats = getQwenStats(focusIdx);
+          const neighborhoodStats = computeQwenSubsetStats(indices);
+          html += '<div class="summary-box">';
+          html += renderPointPreview(focusCustomdata);
+          if (focusStats) {
+            html += '<div class="preview-meta"><strong>Neighborhood:</strong> '
+              + escapeHtml(indices.length) + ' samples &middot; '
+              + escapeHtml(neighborhoodStats.correct) + ' correct / '
+              + escapeHtml(neighborhoodStats.wrong) + ' wrong / '
+              + escapeHtml(neighborhoodStats.parseFail) + ' parse fail</div>';
+          }
+          html += '</div>';
+        }
+        html += '<div class="cluster-grid">';
         indices.forEach(idx => {
           const cd = fullData.customdata[idx];
-          html += '<div class="cluster-item"><img src="data:image/png;base64,' + getCustomValue(cd, 'image_b64') + '" alt=""><div class="preview-label">' + escapeHtml(getCustomValue(cd, 'label')) + '</div></div>';
+          let classes = 'cluster-item';
+          if (qwenEnabled) {
+            const stats = getQwenStats(idx);
+            if (stats) {
+              classes += ' ' + (stats.outcomeKey === 'parse_fail' ? 'parse-fail' : stats.outcomeKey);
+            }
+          }
+          html += '<div class="' + classes + '"><img src="data:image/png;base64,' + getCustomValue(cd, 'image_b64') + '" alt=""><div class="preview-label">' + escapeHtml(getCustomValue(cd, 'label')) + '</div>';
+          if (qwenEnabled) {
+            const stats = getQwenStats(idx);
+            if (stats) {
+              html += '<div class="preview-meta">Pred: ' + escapeHtml(stats.qwenParseValid ? stats.qwenPrediction : 'invalid') + '</div>';
+            }
+          }
+          html += '</div>';
         });
         html += '</div>';
         previewDiv.innerHTML = html;
@@ -691,7 +952,10 @@ _SIDE_PANEL_HTML = """
       }
       if (clusterIndices) {
         if (clusterRenderMode === 'embedding') {
-          clusterHint.textContent = 'Showing ' + clusterIndices.length + ' neighbors in ' + getModeDisplayName(getCurrentMode()) + '. Click Reset to return to the current mode.';
+          const clusterScopeLabel = qwenEnabled
+            ? ('Qwen ' + qwenFilterMode.replace('_', ' '))
+            : getModeDisplayName(getCurrentMode());
+          clusterHint.textContent = 'Showing ' + clusterIndices.length + ' neighbors in ' + clusterScopeLabel + '. Click Reset to return to the current mode.';
           return;
         }
         clusterHint.textContent = 'Showing ' + clusterIndices.length + ' points. Click Reset to return to the current mode.';
@@ -707,6 +971,9 @@ _SIDE_PANEL_HTML = """
       }
       if (comparisonEnabled && getCurrentMode() !== 'regular') {
         title += ' - ' + getModeDisplayName(getCurrentMode());
+      }
+      if (qwenEnabled && qwenFilterMode !== 'all') {
+        title += ' - Qwen ' + qwenFilterMode.replace('_', ' ');
       }
       title += ' (' + modeIndices.length + ' points)';
       Plotly.relayout(plotDiv, {title: title});
@@ -758,6 +1025,20 @@ _SIDE_PANEL_HTML = """
           y: 0.5,
           x: 1.14,
         };
+        return marker;
+      }
+
+      if (qwenEnabled && pointColorMode === 'qwen_outcome') {
+        marker.color = indices.map(idx => {
+          const stats = getQwenStats(idx);
+          return stats ? QWEN_OUTCOME_COLOR_BY_KEY[stats.outcomeKey] : '#6c757d';
+        });
+        marker.showscale = false;
+        delete marker.colorscale;
+        delete marker.cmin;
+        delete marker.cmax;
+        delete marker.cmid;
+        delete marker.colorbar;
         return marker;
       }
 
@@ -835,6 +1116,46 @@ _SIDE_PANEL_HTML = """
           zmin: -1,
           zmax: 1,
           zmid: 0,
+        };
+      }
+
+      if (qwenEnabled && heatmapMetric === 'local_error_rate') {
+        const errorCounts = Array.from({length: bins}, () => Array(bins).fill(0));
+        const counts = Array.from({length: bins}, () => Array(bins).fill(0));
+        indices.forEach(idx => {
+          const x = coords.x[idx];
+          const y = coords.y[idx];
+          const xBin = Math.min(bins - 1, Math.max(0, Math.floor((x - xMin) / xStep)));
+          const yBin = Math.min(bins - 1, Math.max(0, Math.floor((y - yMin) / yStep)));
+          const stats = getQwenStats(idx);
+          const errorScore = stats && stats.qwenParseValid && stats.qwenCorrect ? 0 : 1;
+          errorCounts[yBin][xBin] += errorScore;
+          counts[yBin][xBin] += 1;
+        });
+        const z = errorCounts.map((row, yBin) => row.map((value, xBin) => {
+          const support = counts[yBin][xBin];
+          return support > 0 ? value / support : 0;
+        }));
+        return {
+          type: 'heatmap',
+          x: xCenters,
+          y: yCenters,
+          z: z,
+          visible: true,
+          opacity: heatmapOpacity,
+          colorscale: QWEN_ERROR_RATE_COLORSCALE,
+          hoverinfo: 'skip',
+          showscale: true,
+          colorbar: {
+            title: {text: 'Local error rate'},
+            thickness: 16,
+            len: 0.8,
+            y: 0.5,
+            x: 1.03,
+          },
+          zsmooth: 'best',
+          zmin: 0,
+          zmax: 1,
         };
       }
 
@@ -963,7 +1284,7 @@ _SIDE_PANEL_HTML = """
           homeIndices: homeIndices,
           relayout: null,
         });
-        showClusterGrid(clusterIndices);
+        showClusterGrid(clusterIndices, clusterCenterIdx);
         updateClusterHint();
         return;
       }
@@ -974,7 +1295,7 @@ _SIDE_PANEL_HTML = """
           homeIndices: homeIndices,
           relayout: null,
         });
-        showClusterGrid(clusterIndices);
+        showClusterGrid(clusterIndices, clusterCenterIdx);
         updateClusterHint();
         return;
       }
@@ -989,6 +1310,17 @@ _SIDE_PANEL_HTML = """
     }
 
     function computeModeIndices(mode) {
+      if (qwenEnabled) {
+        return allIndices.filter(idx => {
+          const stats = getQwenStats(idx);
+          if (!stats) return false;
+          if (qwenFilterMode === 'correct') return stats.qwenCorrect;
+          if (qwenFilterMode === 'wrong') return stats.qwenParseValid && !stats.qwenCorrect;
+          if (qwenFilterMode === 'parse_fail') return !stats.qwenParseValid;
+          return true;
+        });
+      }
+
       if (!comparisonEnabled || mode === 'regular') {
         return allIndices.slice();
       }
@@ -1027,9 +1359,10 @@ _SIDE_PANEL_HTML = """
       return [centerIdx].concat(neighbors);
     }
 
-    function showEmbeddingNeighbors(indices) {
+    function showEmbeddingNeighbors(indices, centerIdx = null) {
       clusterIndices = indices.slice();
       clusterRenderMode = 'embedding';
+      clusterCenterIdx = centerIdx;
       const highlighted = new Set(clusterIndices);
       const opacity = modeIndices.map(idx => highlighted.has(idx) ? 1 : 0.04);
       const size = modeIndices.map(idx => highlighted.has(idx) ? getHighlightedScatterSize() : getDefaultScatterSize());
@@ -1040,13 +1373,14 @@ _SIDE_PANEL_HTML = """
         homeIndices: homeIndices,
         relayout: buildRangeRelayout(homeIndices),
       });
-      showClusterGrid(clusterIndices);
+      showClusterGrid(clusterIndices, clusterCenterIdx);
       updateClusterHint();
     }
 
-    function zoomToCluster(indices) {
+    function zoomToCluster(indices, centerIdx = null) {
       clusterIndices = indices.slice();
       clusterRenderMode = 'umap';
+      clusterCenterIdx = centerIdx;
       if (!clusterIndices.length) {
         const homeIndices = getHomeReferenceIndices([]);
         renderTrace([], {
@@ -1063,13 +1397,14 @@ _SIDE_PANEL_HTML = """
         homeIndices: homeIndices,
         relayout: buildRangeRelayout(clusterIndices),
       });
-      showClusterGrid(clusterIndices);
+      showClusterGrid(clusterIndices, clusterCenterIdx);
       updateClusterHint();
     }
 
     function applyModeFilter(resetRanges = true) {
       clusterIndices = null;
       clusterRenderMode = null;
+      clusterCenterIdx = null;
       modeIndices = computeModeIndices(getCurrentMode());
       const homeIndices = getHomeReferenceIndices(modeIndices);
       renderTrace(modeIndices, {
@@ -1084,6 +1419,7 @@ _SIDE_PANEL_HTML = """
     function applyEmbeddingViewChange(resetRanges = true) {
       clusterIndices = null;
       clusterRenderMode = null;
+      clusterCenterIdx = null;
       const homeIndices = getHomeReferenceIndices(modeIndices);
       renderTrace(modeIndices, {
         homeIndices: homeIndices,
@@ -1098,6 +1434,7 @@ _SIDE_PANEL_HTML = """
     function resetView() {
       clusterIndices = null;
       clusterRenderMode = null;
+      clusterCenterIdx = null;
       const homeIndices = getHomeReferenceIndices(modeIndices);
       renderTrace(modeIndices, {
         homeIndices: homeIndices,
@@ -1114,11 +1451,19 @@ _SIDE_PANEL_HTML = """
     if (!trueLabelProbabilityEnabled) {
       pointColorModeSelect.querySelector('option[value="true_label_gap"]').disabled = true;
     }
+    if (!comparisonEnabled) {
+      pointColorModeSelect.querySelector('option[value="outcome"]').disabled = true;
+    }
+    if (!qwenEnabled) {
+      pointColorModeSelect.querySelector('option[value="qwen_outcome"]').disabled = true;
+      heatmapMetricSelect.querySelector('option[value="local_error_rate"]').disabled = true;
+    }
     updateHeatmapControls();
     updateScatterControls();
     updateScatterSizeControls();
     updateHomeScaleControls();
     updatePointColorControls();
+    updateQwenFilterControls();
     Plotly.newPlot(plotDiv, [createEmptyHeatmapTrace()].concat(figure.data), figure.layout, config);
     updateLegendVisibility();
     window.addEventListener('resize', function() { Plotly.Plots.resize(plotDiv); });
@@ -1157,12 +1502,12 @@ _SIDE_PANEL_HTML = """
             });
             if (!resp.ok) throw new Error(resp.statusText);
             const {neighbors} = await resp.json();
-            showEmbeddingNeighbors(neighbors);
+            showEmbeddingNeighbors(neighbors, centerIdx);
           } catch (e) {
             alert('Failed to get neighbors: ' + e.message);
           }
         } else {
-          zoomToCluster(getKNearest(centerIdx, k, allowedIndices));
+          zoomToCluster(getKNearest(centerIdx, k, allowedIndices), centerIdx);
         }
       } else if (plotDiv.data[curveNumber].name === 'Query') {
         const queryText = pt.customdata && pt.customdata[0];
@@ -1317,6 +1662,32 @@ _SIDE_PANEL_HTML = """
       };
       heatmapMetricSelect.onchange = function() {
         heatmapMetric = heatmapMetricSelect.value;
+        updateHeatmapControls();
+        updateHeatmap();
+      };
+    } else if (qwenEnabled) {
+      qwenFilterLabel.style.display = 'inline';
+      pointColorModeLabel.style.display = 'inline';
+      heatmapMetricLabel.style.display = 'inline';
+      qwenFilterSelect.onchange = function() {
+        qwenFilterMode = qwenFilterSelect.value;
+        updateQwenFilterControls();
+        applyModeFilter(true);
+      };
+      pointColorModeSelect.onchange = function() {
+        pointColorMode = pointColorModeSelect.value;
+        if (pointColorMode !== 'digit' && pointColorMode !== 'qwen_outcome') {
+          pointColorMode = 'digit';
+        }
+        updatePointColorControls();
+        updateLegendVisibility();
+        rerenderCurrentScatterState();
+      };
+      heatmapMetricSelect.onchange = function() {
+        heatmapMetric = heatmapMetricSelect.value;
+        if (heatmapMetric !== 'density' && heatmapMetric !== 'local_error_rate') {
+          heatmapMetric = 'density';
+        }
         updateHeatmapControls();
         updateHeatmap();
       };
@@ -1589,6 +1960,7 @@ def plot_latent_space(
     embed_server_port: int = 8765,
     sample_indices: np.ndarray | None = None,
     point_metadata: dict[str, np.ndarray] | None = None,
+    analysis_metadata: dict[str, Any] | None = None,
     title: str = "Latent Space (2D)",
     embedding_views: dict[str, np.ndarray] | None = None,
     initial_embedding_view: str | None = None,
@@ -1620,6 +1992,7 @@ def plot_latent_space(
         embed_server_port: Port for the text embedding server (default 8765).
         sample_indices: Optional original dataset indices for each plotted point.
         point_metadata: Optional extra per-point metadata shown in the side panel.
+        analysis_metadata: Optional global analysis metadata consumed by the frontend.
         title: Plot title.
         embedding_views: Optional mapping from view name to embedding matrix. When
             provided, the frontend can switch the plotted UMAP/t-SNE coordinates
@@ -1795,6 +2168,7 @@ def plot_latent_space(
             meta=dict(
                 customdata_fields=customdata_fields,
                 base_title=title,
+                analysis_metadata=analysis_metadata or {},
                 embedding_view_coords={
                     view_name: dict(
                         x=view_coords[:, 0].tolist(),

@@ -1773,6 +1773,174 @@ def build_latent_visualization_mask(
     raise ValueError(f"Unsupported latent visualization mode: {mode}")
 
 
+def _resolve_latent_visualization_dataset_key(dataset: str) -> str:
+    if dataset == "mnist":
+        return "mnist_in_the_wild"
+    if dataset == "pareidolia":
+        return "pareidolia"
+    raise ValueError(f"Unsupported latent visualization dataset: {dataset}")
+
+
+def _load_latent_visualization_images_and_labels(
+    dataset: str,
+    cfg: FoundationModelConfig,
+    *,
+    test_dataset_path: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    if dataset == "mnist":
+        images, labels, _, _ = load_mnist_in_the_wild(cfg)
+        return images.numpy(), labels.cpu().numpy(), "MNIST-in-the-Wild"
+
+    if not test_dataset_path:
+        raise ValueError("Pareidolia latent visualization requires test_dataset_path")
+    image_paths, labels = _load_pareidolia_eval_samples(test_dataset_path)
+    images = np.stack(
+        [np.asarray(_load_rgb_pil_image(path), dtype=np.uint8) for path in image_paths],
+        axis=0,
+    )
+    return images, labels.cpu().numpy(), "Pareidolia"
+
+
+def _build_qwen_visualization_payload(
+    *,
+    labels: np.ndarray,
+    predictions: np.ndarray,
+    parse_valid: np.ndarray,
+    raw_responses: np.ndarray,
+    repo: str,
+    prompt: str,
+    system_prompt: str,
+    dataset_display_name: str,
+    skipped_count: int,
+    accuracy: float,
+    parse_rate: float,
+    invalid_count: int,
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    labels = np.asarray(labels, dtype=np.int64)
+    predictions = np.asarray(predictions, dtype=np.int64)
+    parse_valid = np.asarray(parse_valid, dtype=bool)
+    raw_responses = np.asarray(raw_responses, dtype=np.str_)
+    qwen_correct = parse_valid & (predictions == labels)
+    point_metadata = {
+        "qwen_prediction": predictions,
+        "qwen_parse_valid": parse_valid,
+        "qwen_raw_response": raw_responses,
+        "qwen_correct": qwen_correct,
+    }
+    analysis_metadata = {
+        "analysis_type": "qwen",
+        "dataset_display_name": dataset_display_name,
+        "qwen_repo": repo,
+        "qwen_prompt": prompt,
+        "qwen_system_prompt": system_prompt,
+        "qwen_accuracy": float(accuracy),
+        "qwen_parse_rate": float(parse_rate),
+        "qwen_invalid_count": int(invalid_count),
+        "qwen_num_samples": int(len(labels)),
+        "qwen_skipped_count": int(skipped_count),
+    }
+    return point_metadata, analysis_metadata
+
+
+def _resolve_qwen_visualization_payload(
+    *,
+    dataset: str,
+    labels_np: np.ndarray,
+    dataset_display_name: str,
+    device: str,
+    qwen_eval_bundle_path: str | None,
+    qwen_prompt: str | None,
+    qwen_system_prompt: str | None,
+    qwen_repo: str,
+    qwen_batch_size: int,
+    test_dataset_path: str | None,
+) -> tuple[dict[str, np.ndarray] | None, dict[str, Any] | None]:
+    if not qwen_eval_bundle_path and not qwen_prompt:
+        return None, None
+
+    from digit_classifier.qwen_vl import (
+        DEFAULT_QWEN_VL_REPO,
+        QWEN_INVALID_PREDICTION_SENTINEL,
+        compute_qwen_dataset_hash,
+        evaluate_qwen_zero_shot_prompt,
+        load_qwen_dataset,
+        load_qwen_eval_bundle,
+        load_qwen_vl_model,
+        resolve_qwen_system_prompt,
+        validate_qwen_eval_bundle,
+    )
+
+    dataset_key = _resolve_latent_visualization_dataset_key(dataset)
+    dataset_hash = compute_qwen_dataset_hash(dataset_key, labels_np)
+
+    if qwen_eval_bundle_path:
+        bundle = load_qwen_eval_bundle(qwen_eval_bundle_path)
+        validate_qwen_eval_bundle(
+            bundle,
+            expected_dataset_key=dataset_key,
+            expected_dataset_hash=dataset_hash,
+            expected_labels=labels_np,
+        )
+        return _build_qwen_visualization_payload(
+            labels=labels_np,
+            predictions=bundle["predictions"],
+            parse_valid=bundle["parse_valid"],
+            raw_responses=bundle["raw_responses"],
+            repo=bundle["repo"],
+            prompt=bundle["prompt"],
+            system_prompt=bundle["system_prompt"],
+            dataset_display_name=dataset_display_name,
+            skipped_count=bundle["skipped_count"],
+            accuracy=bundle["accuracy"],
+            parse_rate=bundle["parse_rate"],
+            invalid_count=bundle["invalid_count"],
+        )
+
+    qwen_dataset = load_qwen_dataset(
+        dataset,
+        test_dataset_path=test_dataset_path,
+    )
+    qwen_labels = np.asarray(qwen_dataset.labels, dtype=np.int64)
+    if not np.array_equal(qwen_labels, labels_np):
+        raise ValueError("Qwen dataset ordering does not match the latent visualization dataset labels")
+    resolved_qwen_repo = qwen_repo or DEFAULT_QWEN_VL_REPO
+    qwen_model, qwen_processor, qwen_device = load_qwen_vl_model(resolved_qwen_repo, device=device)
+    resolved_system_prompt = resolve_qwen_system_prompt(qwen_system_prompt)
+    metrics, predictions, raw_responses = evaluate_qwen_zero_shot_prompt(
+        qwen_model,
+        qwen_processor,
+        qwen_device,
+        qwen_dataset,
+        qwen_prompt,
+        system_prompt=resolved_system_prompt,
+        batch_size=qwen_batch_size,
+        show_progress=True,
+    )
+    prediction_array = np.asarray(
+        [
+            QWEN_INVALID_PREDICTION_SENTINEL if prediction is None else int(prediction)
+            for prediction in predictions
+        ],
+        dtype=np.int64,
+    )
+    parse_valid = np.asarray([prediction is not None for prediction in predictions], dtype=bool)
+    raw_response_array = np.asarray(raw_responses, dtype=np.str_)
+    return _build_qwen_visualization_payload(
+        labels=labels_np,
+        predictions=prediction_array,
+        parse_valid=parse_valid,
+        raw_responses=raw_response_array,
+        repo=resolved_qwen_repo,
+        prompt=qwen_prompt,
+        system_prompt=resolved_system_prompt,
+        dataset_display_name=dataset_display_name,
+        skipped_count=qwen_dataset.skipped_count,
+        accuracy=metrics.accuracy,
+        parse_rate=metrics.parse_rate,
+        invalid_count=metrics.invalid_count,
+    )
+
+
 def _load_frozen_foundation_model(
     architecture: FoundationModelArchitecture,
     device: torch.device,
@@ -1787,6 +1955,8 @@ def _load_frozen_foundation_model(
 def run_latent_visualization(
     *,
     clip_repo: str,
+    dataset: str = "mnist",
+    test_dataset_path: str | None = None,
     device: str = "auto",
     mode: str = LatentVisualizationMode.REGULAR.value,
     comparison_enabled: bool = False,
@@ -1795,6 +1965,11 @@ def run_latent_visualization(
     dino_checkpoint_path: str | None = None,
     clip_oof_bundle_path: str | None = None,
     dino_oof_bundle_path: str | None = None,
+    qwen_eval_bundle_path: str | None = None,
+    qwen_prompt: str | None = None,
+    qwen_system_prompt: str | None = None,
+    qwen_repo: str | None = None,
+    qwen_batch_size: int = 4,
     feature_batch_size: int = 32,
     classifier_batch_size: int = 128,
 ):
@@ -1802,6 +1977,10 @@ def run_latent_visualization(
 
     mode_enum = LatentVisualizationMode(mode)
     comparison_enabled = comparison_enabled or mode_enum is not LatentVisualizationMode.REGULAR
+    if comparison_enabled and dataset != "mnist":
+        raise ValueError("Comparison modes are only supported for the MNIST latent visualizer")
+    if comparison_enabled and (qwen_eval_bundle_path or qwen_prompt):
+        raise ValueError("Qwen analysis mode cannot be combined with CLIP-vs-DINO comparison mode")
     resolved_device = get_device(device)
 
     clip_architecture = get_foundation_model(clip_repo, FoundationModelFamily.CLIP)
@@ -1814,14 +1993,28 @@ def run_latent_visualization(
         use_wandb=False,
     )
     clip_model, clip_processor = _load_frozen_foundation_model(clip_architecture, resolved_device)
-    _, _, clip_features, clip_labels = compute_foundation_model_features(
-        clip_model,
-        clip_processor,
+    dataset_key = _resolve_latent_visualization_dataset_key(dataset)
+    if dataset_key == "mnist_in_the_wild":
+        _, _, clip_features, clip_labels = compute_foundation_model_features(
+            clip_model,
+            clip_processor,
+            clip_cfg,
+            resolved_device,
+        )
+    else:
+        clip_features, clip_labels = compute_foundation_model_test_features(
+            clip_model,
+            clip_processor,
+            clip_cfg,
+            resolved_device,
+            test_dataset_path=test_dataset_path,
+        )
+
+    images_np, dataset_labels, dataset_display_name = _load_latent_visualization_images_and_labels(
+        dataset,
         clip_cfg,
-        resolved_device,
+        test_dataset_path=test_dataset_path,
     )
-    images, dataset_labels, _, _ = load_mnist_in_the_wild(clip_cfg)
-    images_np = images.numpy()
     labels_np = clip_labels.detach().cpu().numpy()
 
     if not np.array_equal(np.asarray(dataset_labels), labels_np):
@@ -1829,7 +2022,8 @@ def run_latent_visualization(
     dataset_hash = compute_dataset_hash(images_np, labels_np)
 
     point_metadata = None
-    title = "Latent Space (2D)"
+    analysis_metadata = None
+    title = f"{dataset_display_name} Latent Space (2D)"
 
     clip_embeddings = clip_features.detach().cpu().numpy()
     embedding_views: dict[str, np.ndarray] = {"clip": clip_embeddings}
@@ -1931,6 +2125,19 @@ def run_latent_visualization(
             "clip_true_label_probability": clip_true_label_probabilities,
             "dino_true_label_probability": dino_true_label_probabilities,
         }
+    else:
+        point_metadata, analysis_metadata = _resolve_qwen_visualization_payload(
+            dataset=dataset,
+            labels_np=labels_np,
+            dataset_display_name=dataset_display_name,
+            device=device,
+            qwen_eval_bundle_path=qwen_eval_bundle_path,
+            qwen_prompt=qwen_prompt,
+            qwen_system_prompt=qwen_system_prompt,
+            qwen_repo=qwen_repo or "",
+            qwen_batch_size=qwen_batch_size,
+            test_dataset_path=test_dataset_path,
+        )
 
     result = plot_latent_space(
         clip_embeddings,
@@ -1942,6 +2149,7 @@ def run_latent_visualization(
         processor=clip_processor,
         device=str(resolved_device),
         point_metadata=point_metadata,
+        analysis_metadata=analysis_metadata,
         title=title,
         embedding_views=embedding_views,
         initial_embedding_view="clip",
