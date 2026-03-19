@@ -87,6 +87,8 @@ def test_parser_qwen_evolve_args():
             "2",
             "--children-per-generation",
             "4",
+            "--batch-size",
+            "8",
         ]
     )
     cli._validate_args(parser, args)
@@ -95,6 +97,7 @@ def test_parser_qwen_evolve_args():
     assert args.generations == 3
     assert args.elite_size == 2
     assert args.children_per_generation == 4
+    assert args.batch_size == 8
 
 
 def test_parser_tokenize_args():
@@ -127,6 +130,7 @@ def test_handle_qwen_dispatches_to_zero_shot(monkeypatch):
         prompt="Focus on the overall shape.",
         dataset="mnist",
         device="cpu",
+        batch_size=8,
         test_dataset=None,
     )
     cli._handle_qwen(args)
@@ -136,8 +140,39 @@ def test_handle_qwen_dispatches_to_zero_shot(monkeypatch):
         "prompt": "Focus on the overall shape.",
         "dataset": "mnist",
         "device": "cpu",
+        "batch_size": 8,
         "test_dataset_path": None,
     }
+
+
+def test_handle_qwen_evolve_dispatches_batch_size(monkeypatch):
+    captured = {}
+
+    class _FakeConfig:
+        def __init__(self, **kwargs):
+            captured["cfg_kwargs"] = kwargs
+
+    def fake_run_qwen_prompt_evolution(cfg):
+        captured["cfg_type"] = type(cfg).__name__
+
+    monkeypatch.setattr("digit_classifier.qwen_evolve.QwenEvolutionConfig", _FakeConfig)
+    monkeypatch.setattr("digit_classifier.qwen_evolve.run_qwen_prompt_evolution", fake_run_qwen_prompt_evolution)
+
+    args = cli.argparse.Namespace(
+        repo=qwen_vl.DEFAULT_QWEN_VL_REPO,
+        device="cuda",
+        llm_model="Qwen/Qwen2.5-3B-Instruct",
+        population_size=10,
+        generations=3,
+        elite_size=2,
+        children_per_generation=4,
+        batch_size=16,
+        random_seed=0,
+        cache_dir="cache/test",
+    )
+    cli._handle_qwen_evolve(args)
+
+    assert captured["cfg_kwargs"]["batch_size"] == 16
 
 
 def test_handle_tokenize_dispatches(monkeypatch):

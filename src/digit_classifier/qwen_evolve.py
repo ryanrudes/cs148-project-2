@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import random
 import re
 from dataclasses import asdict, dataclass
@@ -663,6 +664,8 @@ def validate_qwen_evolution_config(cfg: QwenEvolutionConfig) -> None:
         raise ValueError("--elite-size must be at least 1")
     if cfg.children_per_generation < 1:
         raise ValueError("--children-per-generation must be at least 1")
+    if cfg.batch_size < 1:
+        raise ValueError("--batch-size must be at least 1")
     if cfg.elite_size > cfg.population_size:
         raise ValueError("--elite-size cannot exceed --population-size")
     if cfg.children_per_generation > cfg.population_size:
@@ -688,18 +691,25 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
         temperature=cfg.temperature,
         top_p=cfg.top_p,
     )
+    evolution_split_size = len(split_plan["evolution_indices"])
+    holdout_split_size = len(split_plan["holdout_indices"])
+    first_generation_image_evals = cfg.population_size * evolution_split_size
+    first_generation_generate_calls = cfg.population_size * math.ceil(evolution_split_size / cfg.batch_size)
     console.print(
         Panel(
             f"[bold]Repo[/bold]: {cfg.repo}\n"
             f"[bold]Mutation LLM[/bold]: {cfg.llm_model}\n"
             f"[bold]Device[/bold]: {device.type}\n"
             f"[bold]Dataset[/bold]: {dataset_bundle.display_name} ({dataset_bundle.num_samples} samples)\n"
-            f"[bold]Evolution split[/bold]: {len(split_plan['evolution_indices'])} samples\n"
-            f"[bold]Holdout split[/bold]: {len(split_plan['holdout_indices'])} samples\n"
+            f"[bold]Evolution split[/bold]: {evolution_split_size} samples\n"
+            f"[bold]Holdout split[/bold]: {holdout_split_size} samples\n"
+            f"[bold]Eval batch size[/bold]: {cfg.batch_size}\n"
             f"[bold]Population[/bold]: {cfg.population_size}\n"
             f"[bold]Generations[/bold]: {cfg.generations}\n"
             f"[bold]Elites[/bold]: {cfg.elite_size}\n"
-            f"[bold]Children/gen[/bold]: {cfg.children_per_generation}",
+            f"[bold]Children/gen[/bold]: {cfg.children_per_generation}\n"
+            f"[bold]Gen 1 image evals[/bold]: {first_generation_image_evals}\n"
+            f"[bold]Gen 1 generate() calls[/bold]: {first_generation_generate_calls}",
             title="Qwen Evolution Config",
             expand=False,
         )

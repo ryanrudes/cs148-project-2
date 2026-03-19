@@ -446,6 +446,7 @@ def _handle_qwen(args: argparse.Namespace) -> None:
         dataset=args.dataset,
         device=args.device,
         test_dataset_path=args.test_dataset,
+        batch_size=args.batch_size,
     )
 
 
@@ -462,6 +463,7 @@ def _handle_qwen_evolve(args: argparse.Namespace) -> None:
         children_per_generation=args.children_per_generation,
         random_seed=args.random_seed,
         cache_dir=args.cache_dir,
+        batch_size=args.batch_size,
     )
     run_qwen_prompt_evolution(cfg)
 
@@ -1228,6 +1230,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Qwen VLM repository to use",
     )
     qwen.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    qwen.add_argument("--batch-size", type=int, default=4, help="Batch size for Qwen image evaluation")
     qwen.add_argument(
         "--test-dataset",
         type=str,
@@ -1250,6 +1253,7 @@ def _build_parser() -> argparse.ArgumentParser:
     qwen_evolve.add_argument("--generations", type=int, default=4)
     qwen_evolve.add_argument("--elite-size", type=int, default=3)
     qwen_evolve.add_argument("--children-per-generation", type=int, default=5)
+    qwen_evolve.add_argument("--batch-size", type=int, default=4, help="Batch size for Qwen image evaluation")
     qwen_evolve.add_argument("--random-seed", type=int, default=0)
     qwen_evolve.add_argument("--cache-dir", type=str, default="cache/qwen_prompt_evolution")
 
