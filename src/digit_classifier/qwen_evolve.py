@@ -120,6 +120,8 @@ class QwenEvolutionConfig:
     random_seed: int = 0
     cache_dir: str = DEFAULT_QWEN_EVOLUTION_CACHE_DIR
     batch_size: int = DEFAULT_QWEN_BATCH_SIZE
+    evolution_samples_per_class: int = EVOLUTION_SAMPLES_PER_CLASS
+    holdout_samples_per_class: int = HOLDOUT_SAMPLES_PER_CLASS
     qwen_max_new_tokens: int = DEFAULT_QWEN_MAX_NEW_TOKENS
     llm_max_new_tokens: int = 220
     temperature: float = 0.9
@@ -226,7 +228,13 @@ def _create_qwen_population_progress(*, disable: bool = False) -> Progress:
     )
 
 
-def build_qwen_split_indices(labels: np.ndarray, random_seed: int) -> dict[str, list[int]]:
+def build_qwen_split_indices(
+    labels: np.ndarray,
+    random_seed: int,
+    *,
+    evolution_samples_per_class: int = EVOLUTION_SAMPLES_PER_CLASS,
+    holdout_samples_per_class: int = HOLDOUT_SAMPLES_PER_CLASS,
+) -> dict[str, list[int]]:
     rng = np.random.default_rng(random_seed)
     evolution_indices: list[int] = []
     holdout_indices: list[int] = []
@@ -234,17 +242,17 @@ def build_qwen_split_indices(labels: np.ndarray, random_seed: int) -> dict[str, 
 
     for digit in range(10):
         digit_indices = np.flatnonzero(label_array == digit)
-        required = EVOLUTION_SAMPLES_PER_CLASS + HOLDOUT_SAMPLES_PER_CLASS
+        required = evolution_samples_per_class + holdout_samples_per_class
         if len(digit_indices) < required:
             raise ValueError(
                 f"Digit {digit} has only {len(digit_indices)} samples, but {required} are required"
             )
         shuffled = rng.permutation(digit_indices)
-        evolution_indices.extend(int(index) for index in shuffled[:EVOLUTION_SAMPLES_PER_CLASS])
+        evolution_indices.extend(int(index) for index in shuffled[:evolution_samples_per_class])
         holdout_indices.extend(
             int(index)
             for index in shuffled[
-                EVOLUTION_SAMPLES_PER_CLASS : EVOLUTION_SAMPLES_PER_CLASS + HOLDOUT_SAMPLES_PER_CLASS
+                evolution_samples_per_class : evolution_samples_per_class + holdout_samples_per_class
             ]
         )
 
@@ -261,24 +269,38 @@ def get_or_create_qwen_split_plan(
     *,
     cache_dir: str | Path,
     random_seed: int,
+    evolution_samples_per_class: int,
+    holdout_samples_per_class: int,
 ) -> dict[str, Any]:
     cache_path = Path(cache_dir)
-    split_path = cache_path / f"mnist_split_seed_{random_seed}.json"
+    split_path = (
+        cache_path
+        / f"mnist_split_seed_{random_seed}_e{evolution_samples_per_class}_h{holdout_samples_per_class}.json"
+    )
     if split_path.exists():
         with split_path.open("r", encoding="utf-8") as f:
             payload = json.load(f)
         if (
             payload.get("dataset_key") == dataset_bundle.dataset_key
             and payload.get("num_samples") == dataset_bundle.num_samples
+            and payload.get("evolution_samples_per_class") == evolution_samples_per_class
+            and payload.get("holdout_samples_per_class") == holdout_samples_per_class
         ):
             return payload
 
-    split_indices = build_qwen_split_indices(dataset_bundle.labels, random_seed)
+    split_indices = build_qwen_split_indices(
+        dataset_bundle.labels,
+        random_seed,
+        evolution_samples_per_class=evolution_samples_per_class,
+        holdout_samples_per_class=holdout_samples_per_class,
+    )
     payload = {
         "dataset_key": dataset_bundle.dataset_key,
         "source_path": dataset_bundle.source_path,
         "num_samples": dataset_bundle.num_samples,
         "random_seed": random_seed,
+        "evolution_samples_per_class": evolution_samples_per_class,
+        "holdout_samples_per_class": holdout_samples_per_class,
         "evolution_indices": split_indices["evolution_indices"],
         "holdout_indices": split_indices["holdout_indices"],
     }
@@ -676,6 +698,10 @@ def validate_qwen_evolution_config(cfg: QwenEvolutionConfig) -> None:
         raise ValueError("--children-per-generation must be at least 1")
     if cfg.batch_size < 1:
         raise ValueError("--batch-size must be at least 1")
+    if cfg.evolution_samples_per_class < 1:
+        raise ValueError("--evolution-samples-per-class must be at least 1")
+    if cfg.holdout_samples_per_class < 1:
+        raise ValueError("--holdout-samples-per-class must be at least 1")
     if cfg.elite_size > cfg.population_size:
         raise ValueError("--elite-size cannot exceed --population-size")
     if cfg.children_per_generation > cfg.population_size:
@@ -693,6 +719,8 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
         dataset_bundle,
         cache_dir=cfg.cache_dir,
         random_seed=cfg.random_seed,
+        evolution_samples_per_class=cfg.evolution_samples_per_class,
+        holdout_samples_per_class=cfg.holdout_samples_per_class,
     )
     llm = PromptLLM(
         model_name=cfg.llm_model,
@@ -713,6 +741,8 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
             f"[bold]Dataset[/bold]: {dataset_bundle.display_name} ({dataset_bundle.num_samples} samples)\n"
             f"[bold]Evolution split[/bold]: {evolution_split_size} samples\n"
             f"[bold]Holdout split[/bold]: {holdout_split_size} samples\n"
+            f"[bold]Evolution/class[/bold]: {cfg.evolution_samples_per_class}\n"
+            f"[bold]Holdout/class[/bold]: {cfg.holdout_samples_per_class}\n"
             f"[bold]Eval batch size[/bold]: {cfg.batch_size}\n"
             f"[bold]Population[/bold]: {cfg.population_size}\n"
             f"[bold]Generations[/bold]: {cfg.generations}\n"
@@ -898,6 +928,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generations", type=int, default=4)
     parser.add_argument("--elite-size", type=int, default=3)
     parser.add_argument("--children-per-generation", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_QWEN_BATCH_SIZE)
+    parser.add_argument("--evolution-samples-per-class", type=int, default=EVOLUTION_SAMPLES_PER_CLASS)
+    parser.add_argument("--holdout-samples-per-class", type=int, default=HOLDOUT_SAMPLES_PER_CLASS)
     parser.add_argument("--random-seed", type=int, default=0)
     parser.add_argument("--cache-dir", type=str, default=DEFAULT_QWEN_EVOLUTION_CACHE_DIR)
     return parser.parse_args()
@@ -913,6 +946,9 @@ def main() -> None:
         generations=args.generations,
         elite_size=args.elite_size,
         children_per_generation=args.children_per_generation,
+        batch_size=args.batch_size,
+        evolution_samples_per_class=args.evolution_samples_per_class,
+        holdout_samples_per_class=args.holdout_samples_per_class,
         random_seed=args.random_seed,
         cache_dir=args.cache_dir,
     )

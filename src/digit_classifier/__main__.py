@@ -464,6 +464,8 @@ def _handle_qwen_evolve(args: argparse.Namespace) -> None:
         random_seed=args.random_seed,
         cache_dir=args.cache_dir,
         batch_size=args.batch_size,
+        evolution_samples_per_class=args.evolution_samples_per_class,
+        holdout_samples_per_class=args.holdout_samples_per_class,
     )
     run_qwen_prompt_evolution(cfg)
 
@@ -1254,6 +1256,18 @@ def _build_parser() -> argparse.ArgumentParser:
     qwen_evolve.add_argument("--elite-size", type=int, default=3)
     qwen_evolve.add_argument("--children-per-generation", type=int, default=5)
     qwen_evolve.add_argument("--batch-size", type=int, default=4, help="Batch size for Qwen image evaluation")
+    qwen_evolve.add_argument(
+        "--evolution-samples-per-class",
+        type=int,
+        default=50,
+        help="Number of MNIST-in-the-Wild samples per digit used for the evolution split",
+    )
+    qwen_evolve.add_argument(
+        "--holdout-samples-per-class",
+        type=int,
+        default=50,
+        help="Number of MNIST-in-the-Wild samples per digit used for the holdout split",
+    )
     qwen_evolve.add_argument("--random-seed", type=int, default=0)
     qwen_evolve.add_argument("--cache-dir", type=str, default="cache/qwen_prompt_evolution")
 

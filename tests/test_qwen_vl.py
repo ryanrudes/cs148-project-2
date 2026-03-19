@@ -89,6 +89,10 @@ def test_parser_qwen_evolve_args():
             "4",
             "--batch-size",
             "8",
+            "--evolution-samples-per-class",
+            "12",
+            "--holdout-samples-per-class",
+            "9",
         ]
     )
     cli._validate_args(parser, args)
@@ -98,6 +102,8 @@ def test_parser_qwen_evolve_args():
     assert args.elite_size == 2
     assert args.children_per_generation == 4
     assert args.batch_size == 8
+    assert args.evolution_samples_per_class == 12
+    assert args.holdout_samples_per_class == 9
 
 
 def test_parser_tokenize_args():
@@ -167,12 +173,16 @@ def test_handle_qwen_evolve_dispatches_batch_size(monkeypatch):
         elite_size=2,
         children_per_generation=4,
         batch_size=16,
+        evolution_samples_per_class=12,
+        holdout_samples_per_class=8,
         random_seed=0,
         cache_dir="cache/test",
     )
     cli._handle_qwen_evolve(args)
 
     assert captured["cfg_kwargs"]["batch_size"] == 16
+    assert captured["cfg_kwargs"]["evolution_samples_per_class"] == 12
+    assert captured["cfg_kwargs"]["holdout_samples_per_class"] == 8
 
 
 def test_handle_tokenize_dispatches(monkeypatch):
@@ -384,6 +394,23 @@ def test_build_qwen_split_indices_is_reproducible_and_balanced():
     holdout_labels = labels[first["holdout_indices"]]
     assert all(int((evolution_labels == digit).sum()) == 50 for digit in range(10))
     assert all(int((holdout_labels == digit).sum()) == 50 for digit in range(10))
+
+
+def test_build_qwen_split_indices_supports_custom_split_sizes():
+    labels = np.repeat(np.arange(10), 40)
+    split = qwen_evolve.build_qwen_split_indices(
+        labels,
+        random_seed=11,
+        evolution_samples_per_class=7,
+        holdout_samples_per_class=5,
+    )
+
+    assert len(split["evolution_indices"]) == 70
+    assert len(split["holdout_indices"]) == 50
+    evolution_labels = labels[split["evolution_indices"]]
+    holdout_labels = labels[split["holdout_indices"]]
+    assert all(int((evolution_labels == digit).sum()) == 7 for digit in range(10))
+    assert all(int((holdout_labels == digit).sum()) == 5 for digit in range(10))
 
 
 def test_validate_qwen_candidate_prompt_rejects_output_override():
