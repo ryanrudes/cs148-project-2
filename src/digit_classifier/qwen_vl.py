@@ -114,6 +114,15 @@ def resolve_qwen_device(device: str) -> str:
     return device
 
 
+def resolve_qwen_system_prompt(system_prompt: str | None) -> str:
+    if system_prompt is None:
+        return QWEN_SYSTEM_PROMPT
+    normalized = system_prompt.strip()
+    if not normalized:
+        raise ValueError("Qwen system prompt override must not be empty")
+    return normalized
+
+
 def _download_qwen_tokenizer_assets(repo: str) -> str:
     validate_qwen_vl_repo(repo)
     try:
@@ -301,11 +310,23 @@ def load_qwen_dataset(
 
 
 def build_qwen_conversation(instruction_body: str) -> list[dict[str, Any]]:
+    return build_qwen_conversation_with_system_prompt(
+        instruction_body=instruction_body,
+        system_prompt=QWEN_SYSTEM_PROMPT,
+    )
+
+
+def build_qwen_conversation_with_system_prompt(
+    *,
+    instruction_body: str,
+    system_prompt: str | None = QWEN_SYSTEM_PROMPT,
+) -> list[dict[str, Any]]:
     normalized_instruction = instruction_body.strip()
+    normalized_system_prompt = resolve_qwen_system_prompt(system_prompt)
     return [
         {
             "role": "system",
-            "content": [{"type": "text", "text": QWEN_SYSTEM_PROMPT}],
+            "content": [{"type": "text", "text": normalized_system_prompt}],
         },
         {
             "role": "user",
@@ -321,9 +342,14 @@ def _prepare_qwen_inputs(
     processor: Any,
     images: Sequence[Image.Image],
     instruction_body: str,
+    *,
+    system_prompt: str | None = QWEN_SYSTEM_PROMPT,
 ) -> dict[str, Any]:
     chat_text = processor.apply_chat_template(
-        build_qwen_conversation(instruction_body),
+        build_qwen_conversation_with_system_prompt(
+            instruction_body=instruction_body,
+            system_prompt=system_prompt,
+        ),
         tokenize=False,
         add_generation_prompt=True,
     )
@@ -359,9 +385,15 @@ def generate_qwen_responses(
     images: Sequence[Image.Image],
     instruction_body: str,
     *,
+    system_prompt: str | None = QWEN_SYSTEM_PROMPT,
     max_new_tokens: int = DEFAULT_QWEN_MAX_NEW_TOKENS,
 ) -> list[str]:
-    inputs = _prepare_qwen_inputs(processor, images, instruction_body)
+    inputs = _prepare_qwen_inputs(
+        processor,
+        images,
+        instruction_body,
+        system_prompt=system_prompt,
+    )
     for key, value in list(inputs.items()):
         if torch.is_tensor(value):
             inputs[key] = value.to(device)
@@ -391,6 +423,7 @@ def predict_qwen_digits(
     dataset_bundle: QwenDatasetBundle,
     instruction_body: str,
     *,
+    system_prompt: str | None = QWEN_SYSTEM_PROMPT,
     indices: Sequence[int] | None = None,
     batch_size: int = DEFAULT_QWEN_BATCH_SIZE,
     max_new_tokens: int = DEFAULT_QWEN_MAX_NEW_TOKENS,
@@ -429,6 +462,7 @@ def predict_qwen_digits(
                 device,
                 batch_images,
                 instruction_body,
+                system_prompt=system_prompt,
                 max_new_tokens=max_new_tokens,
             )
             raw_responses.extend(responses)
@@ -451,6 +485,7 @@ def evaluate_qwen_zero_shot_prompt(
     dataset_bundle: QwenDatasetBundle,
     instruction_body: str,
     *,
+    system_prompt: str | None = QWEN_SYSTEM_PROMPT,
     indices: Sequence[int] | None = None,
     batch_size: int = DEFAULT_QWEN_BATCH_SIZE,
     max_new_tokens: int = DEFAULT_QWEN_MAX_NEW_TOKENS,
@@ -462,6 +497,7 @@ def evaluate_qwen_zero_shot_prompt(
         device,
         dataset_bundle,
         instruction_body,
+        system_prompt=system_prompt,
         indices=indices,
         batch_size=batch_size,
         max_new_tokens=max_new_tokens,
@@ -484,13 +520,16 @@ def print_qwen_eval_summary(
     repo: str,
     dataset_bundle: QwenDatasetBundle,
     prompt: str,
+    system_prompt: str | None,
     metrics: QwenEvalMetrics,
 ) -> None:
+    resolved_system_prompt = resolve_qwen_system_prompt(system_prompt)
     console.print(
         f"[bold]Qwen Zero-Shot Evaluation[/bold]\n"
         f"repo: {repo}\n"
         f"dataset: {dataset_bundle.display_name}\n"
         f"source: {dataset_bundle.source_path}\n"
+        f"system_prompt: {resolved_system_prompt}\n"
         f"prompt: {prompt}\n"
         f"num_samples: {metrics.num_samples}\n"
         f"accuracy: {_format_percentage(metrics.accuracy)}\n"
@@ -576,11 +615,13 @@ def run_qwen_zero_shot(
     prompt: str,
     dataset: str,
     device: str = "auto",
+    system_prompt: str | None = QWEN_SYSTEM_PROMPT,
     test_dataset_path: str | Path | None = None,
     datasets_dir: str | Path = "datasets",
     batch_size: int = DEFAULT_QWEN_BATCH_SIZE,
     max_new_tokens: int = DEFAULT_QWEN_MAX_NEW_TOKENS,
 ) -> dict[str, Any]:
+    resolved_system_prompt = resolve_qwen_system_prompt(system_prompt)
     model, processor, torch_device = load_qwen_vl_model(repo, device=device)
     dataset_bundle = load_qwen_dataset(
         dataset,
@@ -593,6 +634,7 @@ def run_qwen_zero_shot(
         torch_device,
         dataset_bundle,
         prompt,
+        system_prompt=resolved_system_prompt,
         batch_size=batch_size,
         max_new_tokens=max_new_tokens,
         show_progress=True,
@@ -601,6 +643,7 @@ def run_qwen_zero_shot(
         repo=repo,
         dataset_bundle=dataset_bundle,
         prompt=prompt,
+        system_prompt=resolved_system_prompt,
         metrics=metrics,
     )
     return {
@@ -608,6 +651,7 @@ def run_qwen_zero_shot(
         "dataset": dataset_bundle.dataset_key,
         "display_name": dataset_bundle.display_name,
         "source_path": dataset_bundle.source_path,
+        "system_prompt": resolved_system_prompt,
         "prompt": prompt,
         "accuracy": metrics.accuracy,
         "parse_rate": metrics.parse_rate,

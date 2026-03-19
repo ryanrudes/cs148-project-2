@@ -445,6 +445,7 @@ def _handle_qwen(args: argparse.Namespace) -> None:
         prompt=args.prompt,
         dataset=args.dataset,
         device=args.device,
+        system_prompt=args.system_prompt,
         test_dataset_path=args.test_dataset,
         batch_size=args.batch_size,
     )
@@ -457,6 +458,7 @@ def _handle_qwen_evolve(args: argparse.Namespace) -> None:
         repo=args.repo,
         device=args.device,
         llm_model=args.llm_model,
+        system_prompt=args.system_prompt,
         population_size=args.population_size,
         generations=args.generations,
         elite_size=args.elite_size,
@@ -1234,6 +1236,12 @@ def _build_parser() -> argparse.ArgumentParser:
     qwen.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     qwen.add_argument("--batch-size", type=int, default=4, help="Batch size for Qwen image evaluation")
     qwen.add_argument(
+        "--system-prompt",
+        type=str,
+        default=None,
+        help="Optional override for the fixed Qwen system prompt",
+    )
+    qwen.add_argument(
         "--test-dataset",
         type=str,
         default=None,
@@ -1256,6 +1264,12 @@ def _build_parser() -> argparse.ArgumentParser:
     qwen_evolve.add_argument("--elite-size", type=int, default=3)
     qwen_evolve.add_argument("--children-per-generation", type=int, default=5)
     qwen_evolve.add_argument("--batch-size", type=int, default=4, help="Batch size for Qwen image evaluation")
+    qwen_evolve.add_argument(
+        "--system-prompt",
+        type=str,
+        default=None,
+        help="Optional override for the fixed Qwen system prompt used during evolution evaluation",
+    )
     qwen_evolve.add_argument(
         "--evolution-samples-per-class",
         type=int,

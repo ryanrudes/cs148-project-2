@@ -29,6 +29,7 @@ def test_parser_qwen_args_and_validation():
     cli._validate_args(parser, args)
     assert args.command == "qwen"
     assert args.repo == qwen_vl.DEFAULT_QWEN_VL_REPO
+    assert args.system_prompt is None
 
     args = parser.parse_args(
         [
@@ -89,6 +90,8 @@ def test_parser_qwen_evolve_args():
             "4",
             "--batch-size",
             "8",
+            "--system-prompt",
+            "You are a custom digit classifier.",
             "--evolution-samples-per-class",
             "12",
             "--holdout-samples-per-class",
@@ -102,6 +105,7 @@ def test_parser_qwen_evolve_args():
     assert args.elite_size == 2
     assert args.children_per_generation == 4
     assert args.batch_size == 8
+    assert args.system_prompt == "You are a custom digit classifier."
     assert args.evolution_samples_per_class == 12
     assert args.holdout_samples_per_class == 9
 
@@ -137,6 +141,7 @@ def test_handle_qwen_dispatches_to_zero_shot(monkeypatch):
         dataset="mnist",
         device="cpu",
         batch_size=8,
+        system_prompt="You are a custom digit classifier.",
         test_dataset=None,
     )
     cli._handle_qwen(args)
@@ -147,6 +152,7 @@ def test_handle_qwen_dispatches_to_zero_shot(monkeypatch):
         "dataset": "mnist",
         "device": "cpu",
         "batch_size": 8,
+        "system_prompt": "You are a custom digit classifier.",
         "test_dataset_path": None,
     }
 
@@ -173,6 +179,7 @@ def test_handle_qwen_evolve_dispatches_batch_size(monkeypatch):
         elite_size=2,
         children_per_generation=4,
         batch_size=16,
+        system_prompt="You are a custom digit classifier.",
         evolution_samples_per_class=12,
         holdout_samples_per_class=8,
         random_seed=0,
@@ -181,6 +188,7 @@ def test_handle_qwen_evolve_dispatches_batch_size(monkeypatch):
     cli._handle_qwen_evolve(args)
 
     assert captured["cfg_kwargs"]["batch_size"] == 16
+    assert captured["cfg_kwargs"]["system_prompt"] == "You are a custom digit classifier."
     assert captured["cfg_kwargs"]["evolution_samples_per_class"] == 12
     assert captured["cfg_kwargs"]["holdout_samples_per_class"] == 8
 
@@ -224,6 +232,18 @@ def test_compute_qwen_eval_metrics_counts_invalids():
     assert metrics.parse_rate == pytest.approx(0.75)
     assert metrics.invalid_count == 1
     assert metrics.num_samples == 4
+
+
+def test_build_qwen_conversation_with_custom_system_prompt():
+    conversation = qwen_vl.build_qwen_conversation_with_system_prompt(
+        instruction_body="Focus on the overall shape.",
+        system_prompt="You are a custom digit classifier.",
+    )
+
+    assert conversation[0]["role"] == "system"
+    assert conversation[0]["content"][0]["text"] == "You are a custom digit classifier."
+    assert conversation[1]["role"] == "user"
+    assert conversation[1]["content"][1]["text"] == "Focus on the overall shape."
 
 
 def test_inspect_qwen_tokenization_uses_loaded_tokenizer(monkeypatch):
@@ -467,6 +487,7 @@ def test_evaluate_qwen_prompt_population_uses_prediction_cache(monkeypatch):
         split_name="evolution",
         indices=indices,
         prediction_cache=cache,
+        system_prompt=qwen_vl.QWEN_SYSTEM_PROMPT,
         batch_size=2,
         max_new_tokens=8,
     )
@@ -479,6 +500,7 @@ def test_evaluate_qwen_prompt_population_uses_prediction_cache(monkeypatch):
         split_name="evolution",
         indices=indices,
         prediction_cache=cache,
+        system_prompt=qwen_vl.QWEN_SYSTEM_PROMPT,
         batch_size=2,
         max_new_tokens=8,
     )
@@ -547,6 +569,7 @@ def test_evaluate_qwen_prompt_population_updates_progress(monkeypatch):
         split_name="evolution",
         indices=[0, 1, 2, 3],
         prediction_cache={},
+        system_prompt=qwen_vl.QWEN_SYSTEM_PROMPT,
         batch_size=2,
         max_new_tokens=8,
         show_progress=True,
@@ -596,7 +619,19 @@ def test_run_qwen_prompt_evolution_writes_artifacts(monkeypatch, tmp_path):
         assert dataset == "mnist"
         return bundle
 
-    def fake_evaluate(model, processor, device, dataset_bundle, prompt, *, indices, batch_size, max_new_tokens):
+    def fake_evaluate(
+        model,
+        processor,
+        device,
+        dataset_bundle,
+        prompt,
+        *,
+        system_prompt,
+        indices,
+        batch_size,
+        max_new_tokens,
+    ):
+        assert system_prompt == qwen_vl.QWEN_SYSTEM_PROMPT
         label_subset = dataset_bundle.labels[np.asarray(indices, dtype=np.int64)]
         if "global" in prompt.lower():
             predictions = [int(label) for label in label_subset]

@@ -34,12 +34,14 @@ from digit_classifier.qwen_vl import (
     DEFAULT_QWEN_BATCH_SIZE,
     DEFAULT_QWEN_MAX_NEW_TOKENS,
     DEFAULT_QWEN_VL_REPO,
+    QWEN_SYSTEM_PROMPT,
     QwenDatasetBundle,
     compute_qwen_eval_metrics,
     evaluate_qwen_zero_shot_prompt,
     list_qwen_vl_repos,
     load_qwen_dataset,
     load_qwen_vl_model,
+    resolve_qwen_system_prompt,
 )
 
 
@@ -113,6 +115,7 @@ class QwenEvolutionConfig:
     repo: str = DEFAULT_QWEN_VL_REPO
     device: str = "auto"
     llm_model: str = DEFAULT_MUTATION_LLM
+    system_prompt: str | None = QWEN_SYSTEM_PROMPT
     population_size: int = 8
     generations: int = 4
     elite_size: int = 3
@@ -318,10 +321,12 @@ def evaluate_qwen_prompt_population(
     split_name: str,
     indices: list[int],
     prediction_cache: dict[tuple[str, str], list[int | None]],
+    system_prompt: str,
     batch_size: int,
     max_new_tokens: int,
     show_progress: bool = False,
 ) -> QwenPopulationEvaluationResult:
+    resolved_system_prompt = resolve_qwen_system_prompt(system_prompt)
     scores: list[QwenPromptScore] = []
     label_subset = dataset_bundle.labels[np.asarray(indices, dtype=np.int64)]
     cache_hits = 0
@@ -358,6 +363,7 @@ def evaluate_qwen_prompt_population(
                     device,
                     dataset_bundle,
                     prompt,
+                    system_prompt=resolved_system_prompt,
                     indices=indices,
                     batch_size=batch_size,
                     max_new_tokens=max_new_tokens,
@@ -673,6 +679,7 @@ def save_qwen_run_summary(
     payload = {
         "repo": cfg.repo,
         "llm_model": cfg.llm_model,
+        "system_prompt": resolve_qwen_system_prompt(cfg.system_prompt),
         "split_plan": split_plan,
         "generations": per_generation,
         "final_holdout_evaluation": {
@@ -711,6 +718,7 @@ def validate_qwen_evolution_config(cfg: QwenEvolutionConfig) -> None:
 def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
     validate_qwen_evolution_config(cfg)
     rng = random.Random(cfg.random_seed)
+    resolved_system_prompt = resolve_qwen_system_prompt(cfg.system_prompt)
 
     console.print("[bold]Starting Qwen prompt evolution[/bold]")
     model, processor, device = load_qwen_vl_model(cfg.repo, device=cfg.device)
@@ -738,6 +746,7 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
             f"[bold]Repo[/bold]: {cfg.repo}\n"
             f"[bold]Mutation LLM[/bold]: {cfg.llm_model}\n"
             f"[bold]Device[/bold]: {device.type}\n"
+            f"[bold]System prompt[/bold]: {_truncate_qwen_prompt(resolved_system_prompt, max_chars=96)}\n"
             f"[bold]Dataset[/bold]: {dataset_bundle.display_name} ({dataset_bundle.num_samples} samples)\n"
             f"[bold]Evolution split[/bold]: {evolution_split_size} samples\n"
             f"[bold]Holdout split[/bold]: {holdout_split_size} samples\n"
@@ -780,6 +789,7 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
             split_name="evolution",
             indices=evolution_indices,
             prediction_cache=prediction_cache,
+            system_prompt=resolved_system_prompt,
             batch_size=cfg.batch_size,
             max_new_tokens=cfg.qwen_max_new_tokens,
             show_progress=True,
@@ -876,6 +886,7 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
         split_name="holdout",
         indices=holdout_indices,
         prediction_cache=prediction_cache,
+        system_prompt=resolved_system_prompt,
         batch_size=cfg.batch_size,
         max_new_tokens=cfg.qwen_max_new_tokens,
         show_progress=True,
@@ -924,6 +935,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo", type=str, default=DEFAULT_QWEN_VL_REPO, choices=list_qwen_vl_repos())
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--llm-model", type=str, default=DEFAULT_MUTATION_LLM)
+    parser.add_argument("--system-prompt", type=str, default=None)
     parser.add_argument("--population-size", type=int, default=8)
     parser.add_argument("--generations", type=int, default=4)
     parser.add_argument("--elite-size", type=int, default=3)
@@ -942,6 +954,7 @@ def main() -> None:
         repo=args.repo,
         device=args.device,
         llm_model=args.llm_model,
+        system_prompt=args.system_prompt,
         population_size=args.population_size,
         generations=args.generations,
         elite_size=args.elite_size,
