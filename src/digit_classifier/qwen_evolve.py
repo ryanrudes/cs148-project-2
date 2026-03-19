@@ -12,6 +12,15 @@ from typing import Any
 import numpy as np
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 from digit_classifier.prompt_evolution_common import (
@@ -84,6 +93,18 @@ class QwenPromptScore:
             "invalid_count": self.invalid_count,
             "num_samples": self.num_samples,
         }
+
+
+@dataclass(frozen=True)
+class QwenPopulationEvaluationResult:
+    split_name: str
+    scores: list[QwenPromptScore]
+    cache_hits: int
+    cache_misses: int
+
+    @property
+    def num_prompts(self) -> int:
+        return len(self.scores)
 
 
 @dataclass
@@ -178,6 +199,32 @@ def build_qwen_prediction_cache_key(split_name: str, prompt: str) -> tuple[str, 
     return split_name, prompt
 
 
+def _log_qwen_status(message: str) -> None:
+    console.print(f"[dim]{message}[/dim]")
+
+
+def _truncate_qwen_prompt(prompt: str, *, max_chars: int = 72) -> str:
+    normalized = canonicalize_qwen_candidate_prompt(prompt)
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3].rstrip() + "..."
+
+
+def _create_qwen_population_progress(*, disable: bool = False) -> Progress:
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("hits {task.fields[cache_hits]} misses {task.fields[cache_misses]}"),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+        disable=disable,
+    )
+
+
 def build_qwen_split_indices(labels: np.ndarray, random_seed: int) -> dict[str, list[int]]:
     rng = np.random.default_rng(random_seed)
     evolution_indices: list[int] = []
@@ -250,37 +297,75 @@ def evaluate_qwen_prompt_population(
     prediction_cache: dict[tuple[str, str], list[int | None]],
     batch_size: int,
     max_new_tokens: int,
-) -> list[QwenPromptScore]:
+    show_progress: bool = False,
+) -> QwenPopulationEvaluationResult:
     scores: list[QwenPromptScore] = []
     label_subset = dataset_bundle.labels[np.asarray(indices, dtype=np.int64)]
+    cache_hits = 0
+    cache_misses = 0
 
-    for prompt in prompts:
-        cache_key = build_qwen_prediction_cache_key(split_name, prompt)
-        predictions = prediction_cache.get(cache_key)
-        if predictions is None:
-            _, predictions, _ = evaluate_qwen_zero_shot_prompt(
-                model,
-                processor,
-                device,
-                dataset_bundle,
-                prompt,
-                indices=indices,
-                batch_size=batch_size,
-                max_new_tokens=max_new_tokens,
-            )
-            prediction_cache[cache_key] = predictions
-        metrics = compute_qwen_eval_metrics(predictions, label_subset)
-        scores.append(
-            QwenPromptScore(
-                prompt=prompt,
-                accuracy=metrics.accuracy,
-                parse_rate=metrics.parse_rate,
-                invalid_count=metrics.invalid_count,
-                num_samples=metrics.num_samples,
-            )
+    progress_cm = _create_qwen_population_progress(disable=not show_progress)
+    with progress_cm as progress:
+        task_id = progress.add_task(
+            f"Scoring {split_name} prompts",
+            total=len(prompts),
+            cache_hits=0,
+            cache_misses=0,
         )
+        for prompt in prompts:
+            cache_key = build_qwen_prediction_cache_key(split_name, prompt)
+            predictions = prediction_cache.get(cache_key)
+            prompt_label = _truncate_qwen_prompt(prompt)
+            if predictions is None:
+                cache_misses += 1
+                progress.update(
+                    task_id,
+                    description=f"Scoring {split_name} prompt: {prompt_label}",
+                    cache_hits=cache_hits,
+                    cache_misses=cache_misses,
+                )
+                _, predictions, _ = evaluate_qwen_zero_shot_prompt(
+                    model,
+                    processor,
+                    device,
+                    dataset_bundle,
+                    prompt,
+                    indices=indices,
+                    batch_size=batch_size,
+                    max_new_tokens=max_new_tokens,
+                )
+                prediction_cache[cache_key] = predictions
+            else:
+                cache_hits += 1
+                progress.update(
+                    task_id,
+                    description=f"Scoring {split_name} prompt: {prompt_label} [cache]",
+                    cache_hits=cache_hits,
+                    cache_misses=cache_misses,
+                )
+            metrics = compute_qwen_eval_metrics(predictions, label_subset)
+            scores.append(
+                QwenPromptScore(
+                    prompt=prompt,
+                    accuracy=metrics.accuracy,
+                    parse_rate=metrics.parse_rate,
+                    invalid_count=metrics.invalid_count,
+                    num_samples=metrics.num_samples,
+                )
+            )
+            progress.update(
+                task_id,
+                advance=1,
+                cache_hits=cache_hits,
+                cache_misses=cache_misses,
+            )
 
-    return rank_qwen_prompt_scores(scores)
+    return QwenPopulationEvaluationResult(
+        split_name=split_name,
+        scores=rank_qwen_prompt_scores(scores),
+        cache_hits=cache_hits,
+        cache_misses=cache_misses,
+    )
 
 
 def generate_qwen_lexical_proposals(
@@ -334,6 +419,10 @@ def collect_qwen_llm_proposals(
         remaining_budget = cfg.max_llm_candidates_per_generation - len(proposals)
         batch_size = max(1, min(cfg.mutation_batch_size, remaining_budget))
         user_prompt = build_qwen_mutation_prompt(elites, existing_prompts, batch_size)
+        _log_qwen_status(
+            f"Mutation batch {batch_index + 1}/{cfg.llm_mutation_batches_per_generation}: "
+            f"requesting up to {batch_size} prompts from {cfg.llm_model}"
+        )
 
         for _ in range(cfg.max_attempts_per_batch):
             search_stats.llm_batches_attempted += 1
@@ -345,8 +434,10 @@ def collect_qwen_llm_proposals(
             )
             search_stats.llm_raw_templates += len(candidates)
             if not candidates:
+                _log_qwen_status("  Mutation LLM returned no valid candidates; retrying")
                 continue
             proposals.extend(candidates[:remaining_budget])
+            _log_qwen_status(f"  Collected {min(len(candidates), remaining_budget)} candidate prompts")
             break
 
     return proposals[: cfg.max_llm_candidates_per_generation]
@@ -464,10 +555,11 @@ def ensure_qwen_population_size(
 def render_qwen_generation(
     *,
     generation: int,
-    scores: list[QwenPromptScore],
+    evaluation: QwenPopulationEvaluationResult,
     population_stats: PopulationStats,
     search_stats: SearchStats,
 ) -> None:
+    scores = evaluation.scores
     best = scores[0]
     console.rule(f"Qwen Generation {generation}")
     console.print(
@@ -505,6 +597,8 @@ def render_qwen_generation(
     stats_table.add_row("Diversity", str(population_stats.diversity))
     stats_table.add_row("Elites kept", str(population_stats.elite_count))
     stats_table.add_row("Children kept", str(population_stats.children_count))
+    stats_table.add_row("Cache hits", str(evaluation.cache_hits))
+    stats_table.add_row("Cache misses", str(evaluation.cache_misses))
     stats_table.add_row("LLM batches attempted", str(search_stats.llm_batches_attempted))
     stats_table.add_row("LLM raw prompts", str(search_stats.llm_raw_templates))
     stats_table.add_row("Accepted novel prompts", str(search_stats.accepted_novel_templates))
@@ -515,16 +609,22 @@ def render_qwen_generation(
 def save_qwen_generation_artifact(
     output_dir: str | Path,
     generation: int,
-    scores: list[QwenPromptScore],
+    evaluation: QwenPopulationEvaluationResult,
     *,
     population_stats: PopulationStats,
     search_stats: SearchStats,
 ) -> None:
     payload = {
         "generation": generation,
+        "evaluation": {
+            "split_name": evaluation.split_name,
+            "num_prompts": evaluation.num_prompts,
+            "cache_hits": evaluation.cache_hits,
+            "cache_misses": evaluation.cache_misses,
+        },
         "search_stats": asdict(search_stats),
         "population_stats": asdict(population_stats),
-        "scores": [score.to_dict() for score in scores],
+        "scores": [score.to_dict() for score in evaluation.scores],
     }
     save_json_artifact(Path(output_dir) / f"generation_{generation:03d}.json", payload)
 
@@ -535,15 +635,21 @@ def save_qwen_run_summary(
     cfg: QwenEvolutionConfig,
     split_plan: dict[str, Any],
     per_generation: list[dict[str, Any]],
-    final_holdout: list[QwenPromptScore],
+    final_holdout: QwenPopulationEvaluationResult,
 ) -> None:
     payload = {
         "repo": cfg.repo,
         "llm_model": cfg.llm_model,
         "split_plan": split_plan,
         "generations": per_generation,
-        "final_holdout_ranking": [score.to_dict() for score in final_holdout],
-        "best_prompt": final_holdout[0].prompt if final_holdout else None,
+        "final_holdout_evaluation": {
+            "split_name": final_holdout.split_name,
+            "num_prompts": final_holdout.num_prompts,
+            "cache_hits": final_holdout.cache_hits,
+            "cache_misses": final_holdout.cache_misses,
+        },
+        "final_holdout_ranking": [score.to_dict() for score in final_holdout.scores],
+        "best_prompt": final_holdout.scores[0].prompt if final_holdout.scores else None,
     }
     save_json_artifact(Path(output_dir) / "run_summary.json", payload)
 
@@ -582,6 +688,22 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
         temperature=cfg.temperature,
         top_p=cfg.top_p,
     )
+    console.print(
+        Panel(
+            f"[bold]Repo[/bold]: {cfg.repo}\n"
+            f"[bold]Mutation LLM[/bold]: {cfg.llm_model}\n"
+            f"[bold]Device[/bold]: {device.type}\n"
+            f"[bold]Dataset[/bold]: {dataset_bundle.display_name} ({dataset_bundle.num_samples} samples)\n"
+            f"[bold]Evolution split[/bold]: {len(split_plan['evolution_indices'])} samples\n"
+            f"[bold]Holdout split[/bold]: {len(split_plan['holdout_indices'])} samples\n"
+            f"[bold]Population[/bold]: {cfg.population_size}\n"
+            f"[bold]Generations[/bold]: {cfg.generations}\n"
+            f"[bold]Elites[/bold]: {cfg.elite_size}\n"
+            f"[bold]Children/gen[/bold]: {cfg.children_per_generation}",
+            title="Qwen Evolution Config",
+            expand=False,
+        )
+    )
 
     population = ensure_qwen_population_size(
         initialize_qwen_population(cfg),
@@ -595,7 +717,11 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
     holdout_indices = split_plan["holdout_indices"]
 
     for generation in range(cfg.generations):
-        scores = evaluate_qwen_prompt_population(
+        _log_qwen_status(
+            f"Generation {generation + 1}/{cfg.generations}: scoring {len(population)} prompts "
+            f"on the evolution split ({len(evolution_indices)} samples)"
+        )
+        evaluation = evaluate_qwen_prompt_population(
             population,
             model=model,
             processor=processor,
@@ -606,10 +732,21 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
             prediction_cache=prediction_cache,
             batch_size=cfg.batch_size,
             max_new_tokens=cfg.qwen_max_new_tokens,
+            show_progress=True,
+        )
+        scores = evaluation.scores
+        _log_qwen_status(
+            f"Generation {generation + 1}/{cfg.generations}: "
+            f"{evaluation.cache_hits} cache hits, {evaluation.cache_misses} new evaluations, "
+            f"best accuracy {scores[0].accuracy:.4f}, parse {scores[0].parse_rate:.4f}"
         )
 
         if generation < cfg.generations - 1:
             elites = [score.prompt for score in scores[: cfg.elite_size]]
+            _log_qwen_status(
+                f"Generation {generation + 1}/{cfg.generations}: building {cfg.children_per_generation} children "
+                f"from top {len(elites)} prompts"
+            )
             children, search_stats = build_qwen_children(
                 llm,
                 scores[: cfg.elite_size],
@@ -632,6 +769,12 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
                 lexical_mutation_children=search_stats.lexical_mutations_used,
                 filler_candidates=max(0, len(next_population) - len(elites) - len(children)),
             )
+            _log_qwen_status(
+                f"Generation {generation + 1}/{cfg.generations}: next population has {len(next_population)} prompts "
+                f"({population_stats.llm_generated_children} LLM, "
+                f"{population_stats.lexical_mutation_children} lexical, "
+                f"{population_stats.filler_candidates} filler)"
+            )
             population = next_population
         else:
             search_stats = SearchStats()
@@ -644,27 +787,37 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
 
         render_qwen_generation(
             generation=generation,
-            scores=scores,
+            evaluation=evaluation,
             population_stats=population_stats,
             search_stats=search_stats,
         )
         save_qwen_generation_artifact(
             cfg.cache_dir,
             generation,
-            scores,
+            evaluation,
             population_stats=population_stats,
             search_stats=search_stats,
         )
         generation_records.append(
             {
                 "generation": generation,
+                "evaluation": {
+                    "split_name": evaluation.split_name,
+                    "num_prompts": evaluation.num_prompts,
+                    "cache_hits": evaluation.cache_hits,
+                    "cache_misses": evaluation.cache_misses,
+                },
                 "search_stats": asdict(search_stats),
                 "population_stats": asdict(population_stats),
                 "scores": [score.to_dict() for score in scores],
             }
         )
 
-    final_holdout_scores = evaluate_qwen_prompt_population(
+    _log_qwen_status(
+        f"Evaluating final population on the holdout split ({len(population)} prompts, "
+        f"{len(holdout_indices)} samples)"
+    )
+    final_holdout_evaluation = evaluate_qwen_prompt_population(
         population,
         model=model,
         processor=processor,
@@ -675,6 +828,12 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
         prediction_cache=prediction_cache,
         batch_size=cfg.batch_size,
         max_new_tokens=cfg.qwen_max_new_tokens,
+        show_progress=True,
+    )
+    final_holdout_scores = final_holdout_evaluation.scores
+    _log_qwen_status(
+        f"Holdout evaluation complete: {final_holdout_evaluation.cache_hits} cache hits, "
+        f"{final_holdout_evaluation.cache_misses} new evaluations"
     )
 
     holdout_table = Table(title="Final Holdout Ranking", show_lines=False)
@@ -698,7 +857,7 @@ def run_qwen_prompt_evolution(cfg: QwenEvolutionConfig) -> dict[str, Any]:
         cfg=cfg,
         split_plan=split_plan,
         per_generation=generation_records,
-        final_holdout=final_holdout_scores,
+        final_holdout=final_holdout_evaluation,
     )
 
     best_prompt = final_holdout_scores[0].prompt if final_holdout_scores else None

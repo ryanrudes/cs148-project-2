@@ -419,8 +419,83 @@ def test_evaluate_qwen_prompt_population_uses_prediction_cache(monkeypatch):
     )
 
     assert calls["count"] == 2
-    assert [score.accuracy for score in first] == [1.0, 1.0]
-    assert [score.accuracy for score in second] == [1.0, 1.0]
+    assert first.cache_hits == 0
+    assert first.cache_misses == 2
+    assert second.cache_hits == 2
+    assert second.cache_misses == 0
+    assert [score.accuracy for score in first.scores] == [1.0, 1.0]
+    assert [score.accuracy for score in second.scores] == [1.0, 1.0]
+
+
+def test_evaluate_qwen_prompt_population_updates_progress(monkeypatch):
+    bundle = qwen_vl.QwenDatasetBundle(
+        dataset_key="mnist_in_the_wild",
+        display_name="MNIST-in-the-Wild",
+        labels=np.array([0, 1, 2, 3], dtype=np.int64),
+        image_loader=lambda idx: Image.new("RGB", (2, 2)),
+        source_path="datasets/mnist_itw_rgb_336.npz",
+    )
+    recorded_updates: list[dict[str, object]] = []
+
+    class _FakeProgress:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def add_task(self, description, *, total, cache_hits, cache_misses):
+            recorded_updates.append(
+                {
+                    "kind": "add_task",
+                    "description": description,
+                    "total": total,
+                    "cache_hits": cache_hits,
+                    "cache_misses": cache_misses,
+                }
+            )
+            return 1
+
+        def update(self, task_id, **kwargs):
+            payload = {"kind": "update", "task_id": task_id}
+            payload.update(kwargs)
+            recorded_updates.append(payload)
+
+    def fake_evaluate(*args, **kwargs):
+        labels = bundle.labels[np.asarray(kwargs["indices"], dtype=np.int64)]
+        predictions = [int(label) for label in labels]
+        metrics = qwen_vl.compute_qwen_eval_metrics(predictions, labels)
+        return metrics, predictions, [str(pred) for pred in predictions]
+
+    monkeypatch.setattr(qwen_evolve, "_create_qwen_population_progress", lambda disable=False: _FakeProgress())
+    monkeypatch.setattr(qwen_evolve, "evaluate_qwen_zero_shot_prompt", fake_evaluate)
+
+    result = qwen_evolve.evaluate_qwen_prompt_population(
+        ["prompt one for global shape", "prompt two for silhouette focus"],
+        model=object(),
+        processor=object(),
+        device=torch.device("cpu"),
+        dataset_bundle=bundle,
+        split_name="evolution",
+        indices=[0, 1, 2, 3],
+        prediction_cache={},
+        batch_size=2,
+        max_new_tokens=8,
+        show_progress=True,
+    )
+
+    assert result.cache_hits == 0
+    assert result.cache_misses == 2
+    assert result.num_prompts == 2
+    assert recorded_updates[0] == {
+        "kind": "add_task",
+        "description": "Scoring evolution prompts",
+        "total": 2,
+        "cache_hits": 0,
+        "cache_misses": 0,
+    }
+    advances = [update["advance"] for update in recorded_updates if update["kind"] == "update" and "advance" in update]
+    assert advances == [1, 1]
 
 
 def test_run_qwen_prompt_evolution_writes_artifacts(monkeypatch, tmp_path):
