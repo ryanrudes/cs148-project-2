@@ -17,6 +17,8 @@ A PyTorch training pipeline for digit classification using **ResNeXt** with
 YOLO-style augmentation, external dataset mixing, and comprehensive experiment
 tracking.
 
+For wandb logs, see [here](https://wandb.ai/ryanrudes-caltech-California%20Institute%20of%20Technology%20-%20C/mnist-in-the-wild-clip/workspace?nw=nwuserryanrudescaltech) and [here](https://wandb.ai/ryanrudes-caltech-California%20Institute%20of%20Technology%20-%20C/mnist-in-the-wild-dino?nw=nwuserryanrudescaltech).
+
 ## Features
 
 - **ResNeXt-101** with stochastic depth (drop-path) and grouped convolutions
